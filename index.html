@@ -43,6 +43,7 @@
     <button class="more-item" data-more="matrix"><span class="mi-ico">⧉</span>组合出图</button>
     <button class="more-item" data-more="download"><span class="mi-ico">⤓</span>批量下载</button>
     <button class="more-item" data-more="img2img"><span class="mi-ico">🖼</span>图生图</button>
+    <button class="more-item" data-more="translate"><span class="mi-ico">🌍</span>译成英文</button>
     <button class="more-item" data-more="clear"><span class="mi-ico">✕</span>清空对话框</button>
     <button class="more-item" data-more="undo"><span class="mi-ico">↺</span>撤销上次追加</button>
     <button class="more-item" data-more="help"><span class="mi-ico">?</span>使用说明</button>
@@ -189,6 +190,7 @@
         </div>
       </div>
       <div class="composer-foot">
+        <button class="link-btn" id="btnTranslate" title="把提示词翻译成英文">🌍 译成英文</button>
         <label class="inline-check">
           <input type="checkbox" id="chkAppendJoin" checked>
           <span>追加时自动补分隔符</span>
@@ -423,6 +425,50 @@
           </div>
           <div class="field-row">
             <button class="btn tiny ghost" id="i2iClearCfg">清除参考图</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc" id="accTranslate">
+        <summary>翻译 · 中译英</summary>
+        <div class="acc-body">
+          <div class="note-box">
+            走 OpenAI 兼容的对话接口做翻译。不填 Key 时按钮会提示。
+            一次翻译约几百字符，费用通常不到 1 分钱。
+          </div>
+          <div class="field">
+            <label>翻译接口 Base URL</label>
+            <div class="model-wrap">
+              <input type="text" id="trBaseUrl" placeholder="https://api.openai.com/v1" spellcheck="false">
+              <button class="model-fetch-btn" id="trReuse" title="复用画图接口的地址">同画图</button>
+            </div>
+            <small>留空则使用画图接口的地址</small>
+          </div>
+          <div class="field">
+            <label>翻译 API Key</label>
+            <div class="pw-wrap">
+              <input type="password" id="trApiKey" placeholder="sk-…（留空则用画图 Key）" spellcheck="false">
+              <button class="pw-toggle" data-target="trApiKey" title="显示/隐藏">👁</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>翻译模型</label>
+            <input type="text" id="trModel" list="trModelPresets" placeholder="gpt-4o-mini" spellcheck="false">
+            <datalist id="trModelPresets">
+              <option value="gpt-4o-mini"></option>
+              <option value="gpt-4.1-mini"></option>
+              <option value="deepseek-chat"></option>
+              <option value="glm-4-flash"></option>
+            </datalist>
+            <small>推荐便宜快速的迷你模型即可</small>
+          </div>
+          <div class="field">
+            <label>翻译后动作</label>
+            <select id="trAction">
+              <option value="replace">替换原文</option>
+              <option value="append">追加在原文后面</option>
+              <option value="copy">只复制到剪贴板</option>
+            </select>
           </div>
         </div>
       </details>

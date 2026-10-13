@@ -241,6 +241,11 @@ function defaultCfg() {
     i2iFormat: 'dataurl',    // dataurl | base64
     mapImage: 'image',
     mapStrength: 'strength',
+    /* 翻译 */
+    trBaseUrl: '',           // 留空则用画图接口
+    trApiKey: '',            // 留空则用画图 Key
+    trModel: 'gpt-4o-mini',
+    trAction: 'replace',
     gh: {
       owner: '', repo: '', branch: 'main', path: 'prompts.json',
       token: '', autoSync: true, publicRead: false, lastSync: 0,
@@ -1399,6 +1404,12 @@ function settingsToUI() {
   $('#i2iOutW').disabled = !!state.cfg.i2iFollowSize;
   $('#i2iOutH').disabled = !!state.cfg.i2iFollowSize;
 
+  // 翻译
+  $('#trBaseUrl').value = state.cfg.trBaseUrl || '';
+  $('#trApiKey').value = state.cfg.trApiKey || '';
+  $('#trModel').value = state.cfg.trModel || 'gpt-4o-mini';
+  $('#trAction').value = state.cfg.trAction || 'replace';
+
   updateSyncPill();
   renderSizeGrid();
   updateStoreStat();
@@ -1817,6 +1828,19 @@ function bindEvents() {
   $('#i2iFormat').addEventListener('change', e => { state.cfg.i2iFormat = e.target.value; persist.cfg(); });
   $('#mapImage').addEventListener('input', e => { state.cfg.mapImage = e.target.value; persist.cfg(); });
   $('#mapStrength').addEventListener('input', e => { state.cfg.mapStrength = e.target.value; persist.cfg(); });
+
+  /* --- 翻译 --- */
+  $('#trBaseUrl').addEventListener('input', e => { state.cfg.trBaseUrl = e.target.value; persist.cfg(); });
+  $('#trApiKey').addEventListener('input', e => { state.cfg.trApiKey = e.target.value; persist.cfg(); });
+  $('#trModel').addEventListener('input', e => { state.cfg.trModel = e.target.value; persist.cfg(); });
+  $('#trAction').addEventListener('change', e => { state.cfg.trAction = e.target.value; persist.cfg(); });
+  $('#trReuse').addEventListener('click', () => {
+    state.cfg.trBaseUrl = state.cfg.baseUrl || '';
+    $('#trBaseUrl').value = state.cfg.trBaseUrl;
+    persist.cfg();
+    toast('已复用画图接口地址', 'ok', 1500);
+  });
+  $('#btnTranslate').addEventListener('click', translatePrompt);
 
   /* --- Tab --- */
   $$('.tab').forEach(t => t.addEventListener('click', () => {
@@ -2656,10 +2680,103 @@ function handleMoreAction(action) {
     case 'matrix':   openMatrix(); break;
     case 'download': $('#btnDownloadMode').click(); break;
     case 'img2img':  $('#btnImg2Img').click(); break;
+    case 'translate': translatePrompt(); break;
     case 'clear':    $('#btnClearPrompt').click(); break;
     case 'undo':     undoAppend(); break;
     case 'help':     openModal('使用说明', HELP_HTML); break;
     case 'close':    break;
+  }
+}
+
+/* ============================================================
+   提示词翻译（中 → 英）
+   ============================================================ */
+const TR_SYSTEM = 'You are a prompt translator for AI image generation. Translate the user text into concise, natural English prompt keywords. Keep proper nouns and existing English words as-is. Preserve comma-separated keyword structure. Output ONLY the translation, nothing else.';
+
+async function translatePrompt() {
+  const raw = els.promptBox.value.trim();
+  if (!raw) { toast('提示词是空的，没东西可译', 'warn'); return; }
+
+  // 纯英文则跳过
+  if (!/[\u4e00-\u9fa5]/.test(raw)) { toast('提示词里没有中文，无需翻译', '', 2000); return; }
+
+  const base = (state.cfg.trBaseUrl || state.cfg.baseUrl || '').trim().replace(/\/+$/, '');
+  const key  = (state.cfg.trApiKey   || state.cfg.apiKey   || '').trim();
+  const model = (state.cfg.trModel || 'gpt-4o-mini').trim();
+
+  if (!base || !key) {
+    toast('请先在设置 →「翻译」里配置接口（或点「同画图」复用画图 Key）', 'warn', 3800);
+    const acc = document.getElementById('accTranslate');
+    if (acc) { acc.open = true; if (window.innerWidth > 1000) els.panelParams.classList.add('open'); }
+    return;
+  }
+
+  const btn = $('#btnTranslate');
+  const orig = btn.textContent;
+  btn.textContent = '🌍 翻译中…';
+  btn.disabled = true;
+
+  try {
+    const url = /\/chat\/completions$/.test(base) ? base : base + '/chat/completions';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + key,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: TR_SYSTEM },
+          { role: 'user', content: raw },
+        ],
+        temperature: 0.2,
+      }),
+      signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined,
+    });
+
+    if (!res.ok) {
+      const t = await res.text();
+      let msg = `HTTP ${res.status}`;
+      try { const d = JSON.parse(t); msg += ' · ' + (d.error?.message || d.message || '').slice(0, 160); }
+      catch (e) { msg += ' · ' + t.slice(0, 160); }
+      throw new Error(msg);
+    }
+
+    const data = await res.json();
+    let out = '';
+    if (data.choices && data.choices[0]) {
+      out = data.choices[0].message?.content || data.choices[0].text || '';
+    } else if (data.output_text) out = data.output_text;
+    out = String(out || '').trim().replace(/^["']|["']$/g, '');
+
+    if (!out) throw new Error('接口返回为空');
+
+    const action = state.cfg.trAction || 'replace';
+    if (action === 'copy') {
+      await copyText(out);
+      toast('译文已复制到剪贴板', 'ok');
+    } else if (action === 'append') {
+      insertPrompt(out, { silent: false });
+      toast('译文已追加到提示词', 'ok');
+    } else {
+      pushUndo();
+      els.promptBox.value = out;
+      state.ui.chips = [{ id: uid(), text: out }];
+      updatePromptMeta();
+      renderChips();
+      saveDraft();
+      toast('已替换为英文译文（Ctrl+Shift+Z 可撤销）', 'ok');
+    }
+  } catch (e) {
+    let msg = e.message || String(e);
+    if (/Failed to fetch|NetworkError/i.test(msg)) {
+      msg = '网络失败：检查翻译接口地址是否正确、该地址是否支持对话接口（/chat/completions）';
+    }
+    toast('翻译失败：' + msg, 'err', 4200);
+  } finally {
+    btn.textContent = orig;
+    btn.disabled = false;
   }
 }
 
