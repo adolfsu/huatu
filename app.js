@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.6.1';
+const APP_VERSION = '1.6.2';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -2994,6 +2994,36 @@ function vsErrMsg(data, text) {
   return String(text || '').slice(0, 400) || '（无返回内容）';
 }
 
+/* 把服务商的原话翻译成人话：能识别的模式才给提示 */
+function vsExplainError(msg) {
+  const m = String(msg || '');
+  if (/no usage expression or meter/i.test(m)) {
+    return '这条来自中转站/服务端，不是请求格式问题：该站点没有为这个模型配置视频任务的计费表达式。通常两种原因——① 该站点根本不支持这个模型名跑视频任务，换用它文档里列出的视频模型（如 sora-2 / veo3 / kling-v1 / hailuo-02）；② 站点管理员尚未给该模型开通视频任务计费。可点「复制诊断信息」发给站点客服核对。';
+  }
+  if (/model\s*not\s*found|invalid model|unknown model|无可用渠道|不支持(的)?模型|模型不存在/i.test(m)) {
+    return '站点不认这个模型名。点「获取模型」从它给的列表里挑一个，或改成该站点文档里的写法。';
+  }
+  if (/insufficient|quota|balance|余额|欠费|额度/i.test(m)) {
+    return '账户余额或额度不足，充值后再试。';
+  }
+  if (/unauthorized|invalid api key|\b401\b/i.test(m)) {
+    return 'API Key 无效或与这个 Base URL 不配套：检查是否复制完整、有没有多余空格。';
+  }
+  if (/forbidden|\b403\b/i.test(m)) {
+    return 'Key 没有调用该模型的权限：在站点里确认该模型已对你开放。';
+  }
+  if (/content|sensitive|violat|policy|审核|违规/i.test(m)) {
+    return '提示词或首帧图触发了内容审核，换个说法或换张图再试。';
+  }
+  if (/Failed to fetch|NetworkError|CORS/i.test(m)) {
+    return '网络层就断了：Base URL 写错，或该站点不允许网页直连（无 CORS 头）。可换支持跨域的中转站点。';
+  }
+  if (/超时|timeout/i.test(m)) {
+    return '等待超时：视频任务耗时较长，可在「高级」里把最长等待时间调大。';
+  }
+  return '';
+}
+
 function vsShort(data, text) {
   return (data ? JSON.stringify(data) : String(text || '')).slice(0, 300);
 }
@@ -3150,6 +3180,9 @@ async function vsGenerate() {
     url = vsSubmitUrl();
   } catch (e) { toast(e.message, 'err', 3600); return; }
 
+  /* 诊断快照：出错时可一键复制发给中转站客服核对 */
+  const diag = { url, model: payload.model, format: v.format, payload };
+
   if (v.debug) {
     els.vsDebugPre.classList.remove('hidden');
     els.vsDebugPre.textContent = `POST ${url}\n\n` + JSON.stringify(payload, null, 2);
@@ -3163,6 +3196,7 @@ async function vsGenerate() {
     id: uid(), kind: 'task', status: 'submitting',
     prompt, startedAt: Date.now(), elapsed: 0,
     taskId: '', progress: null, polls: 0, rawStatus: '', message: '', src: '', cover: '',
+    hint: '', diag,
   };
   state.video.tasks.unshift(task);
   renderVs();
@@ -3229,6 +3263,7 @@ async function vsGenerate() {
     task.kind = 'error';
     task.status = 'fail';
     task.message = msg;
+    task.hint = vsExplainError(msg);
     task.elapsed = Date.now() - task.startedAt;
     renderVs();
     toast('视频生成失败，看右侧原因', 'err', 3600);
@@ -3326,10 +3361,13 @@ function vsCardHTML(t) {
   }
 
   if (t.kind === 'error') {
+    const hint = t.hint ? `<div class="vtask-hint">💡 ${esc(t.hint)}</div>` : '';
     return `<div class="vtask fail" data-vid="${t.id}">
       <div class="vtask-head">✕ 生成失败</div>
       <div class="vtask-msg">${esc(t.message || '未知错误')}</div>
+      ${hint}
       <div class="vtask-meta">耗时 ${vsDur(t.elapsed)}${t.taskId ? ' · 任务号 ' + esc(t.taskId) : ''}</div>
+      ${t.diag ? `<div class="vtask-acts"><button class="mini-btn" data-vact="diag" data-vid="${t.id}">⧉ 复制诊断信息</button></div>` : ''}
     </div>`;
   }
 
@@ -3376,6 +3414,31 @@ function renderVs() {
   const alive = new Set(tasks.map(t => t.id));
   Array.from(list.children).forEach(el => { if (!alive.has(el.dataset.vid)) el.remove(); });
   Array.from(_vsEls.keys()).forEach(k => { if (!alive.has(k)) _vsEls.delete(k); });
+}
+
+/* 一键复制诊断信息（把 base64 首帧图省略，方便发给中转站客服） */
+function vsCopyDiag(t) {
+  const d = t.diag || {};
+  const p = {};
+  Object.keys(d.payload || {}).forEach(k => {
+    const val = d.payload[k];
+    if (typeof val === 'string' && val.length > 120) p[k] = val.slice(0, 48) + `…（已省略 ${val.length} 字符）`;
+    else p[k] = val;
+  });
+  const txt = [
+    '【Prompt Painter · 视频生成诊断】',
+    '时间：' + new Date(t.startedAt || Date.now()).toLocaleString(),
+    '请求：POST ' + (d.url || '（未记录）'),
+    '格式：' + (d.format || 'json') + '　模型：' + (d.model || '（空）'),
+    '',
+    '请求体：',
+    JSON.stringify(p, null, 2),
+    '',
+    '报错原文：' + (t.message || ''),
+  ].join('\n');
+  copyText(txt)
+    .then(() => toast('诊断信息已复制，可直接发给站点客服', 'ok', 3200))
+    .catch(() => toast('复制失败', 'err'));
 }
 
 async function vsDownload(task) {
@@ -3646,6 +3709,8 @@ function bindVideoEvents() {
     if (!t) return;
     if (btn.dataset.vact === 'copy') {
       copyText(t.prompt).then(() => toast('提示词已复制', 'ok')).catch(() => toast('复制失败', 'err'));
+    } else if (btn.dataset.vact === 'diag') {
+      vsCopyDiag(t);
     } else if (btn.dataset.vact === 'download') {
       vsDownload(t);
     }
