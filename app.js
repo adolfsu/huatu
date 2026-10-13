@@ -232,6 +232,15 @@ function defaultCfg() {
     debug: false,
     appendJoin: true,
     dedupe: true,
+    /* 图生图 */
+    refImage: null,          // { dataUrl, base64, width, height, name, size }
+    i2iStrength: 0.6,
+    i2iOutW: null,
+    i2iOutH: null,
+    i2iFollowSize: true,
+    i2iFormat: 'dataurl',    // dataurl | base64
+    mapImage: 'image',
+    mapStrength: 'strength',
     gh: {
       owner: '', repo: '', branch: 'main', path: 'prompts.json',
       token: '', autoSync: true, publicRead: false, lastSync: 0,
@@ -293,9 +302,16 @@ function loadAll() {
   state.ui.sort = ui.sort || 'manual';
 }
 
+/* 持久化配置时剔除体积巨大的参考图（base64 会撑爆 localStorage 配额） */
+function cfgForStorage() {
+  const c = Object.assign({}, state.cfg);
+  delete c.refImage;
+  return c;
+}
+
 const persist = {
   lib:   debounce(() => store.write(LS.lib, state.lib), 350),
-  cfg:   debounce(() => store.write(LS.cfg, state.cfg), 350),
+  cfg:   debounce(() => store.write(LS.cfg, cfgForStorage()), 350),
   hist:  debounce(() => store.write(LS.hist, state.history), 500),
   ui:    debounce(() => store.write(LS.ui, { sort: state.ui.sort }), 350),
 };
@@ -830,6 +846,7 @@ async function generate() {
   try {
     endpoint = buildEndpoint();
     payload = buildPayload(prompt);
+    applyImagePayload(payload);   // 图生图：并入参考图字段
   } catch (e) {
     toast(e.message, 'err', 3200); return;
   }
@@ -1367,9 +1384,25 @@ function settingsToUI() {
   });
   $('#cfgCount').value = state.cfg.count;
   $('#cfgCountOut').textContent = state.cfg.count + ' 张';
+
+  // 图生图相关
+  $('#i2iStrength').value = state.cfg.i2iStrength;
+  $('#i2iStrength2').value = state.cfg.i2iStrength;
+  $('#i2iStrengthOut').textContent = Number(state.cfg.i2iStrength).toFixed(2);
+  $('#i2iStrengthOut2').textContent = Number(state.cfg.i2iStrength).toFixed(2);
+  $('#i2iFollowSize').checked = !!state.cfg.i2iFollowSize;
+  $('#i2iFormat').value = state.cfg.i2iFormat || 'dataurl';
+  $('#mapImage').value = state.cfg.mapImage || 'image';
+  $('#mapStrength').value = state.cfg.mapStrength || 'strength';
+  if (state.cfg.i2iOutW) $('#i2iOutW').value = state.cfg.i2iOutW;
+  if (state.cfg.i2iOutH) $('#i2iOutH').value = state.cfg.i2iOutH;
+  $('#i2iOutW').disabled = !!state.cfg.i2iFollowSize;
+  $('#i2iOutH').disabled = !!state.cfg.i2iFollowSize;
+
   updateSyncPill();
   renderSizeGrid();
   updateStoreStat();
+  renderReference();
 }
 
 function updateSyncPill() {
@@ -1699,6 +1732,91 @@ function bindEvents() {
     toast(`已从词库填入 ${auto.length} 条`, 'ok', 1800);
   });
   els.matrixRun.addEventListener('click', runMatrix);
+
+  /* --- 移动端 ⋯ 菜单 --- */
+  $('#btnMore').addEventListener('click', openMoreMenu);
+  $('#btnMoreStage').addEventListener('click', openMoreMenu);
+  els.moreMenu.addEventListener('click', e => {
+    if (e.target === els.moreMenu) return closeMoreMenu();
+    const item = e.target.closest('[data-more]');
+    if (item) handleMoreAction(item.dataset.more);
+  });
+
+  /* --- 图生图 --- */
+  $('#btnImg2Img').addEventListener('click', () => {
+    const has = !!(state.cfg.refImage && state.cfg.refImage.dataUrl);
+    if (has) {
+      // 已有参考图：聚焦对话框，方便补充描述
+      els.promptBox.focus();
+      toast('参考图已就位，补充描述后开始绘制', '', 2200);
+    } else {
+      els.i2iFile.click();
+    }
+  });
+  els.i2iFile.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) handleRefFile(f);
+    e.target.value = '';
+  });
+  els.i2iDrop.addEventListener('click', () => els.i2iFile.click());
+  ['dragenter', 'dragover'].forEach(ev => els.i2iDrop.addEventListener(ev, e => {
+    e.preventDefault(); els.i2iDrop.classList.add('over');
+  }));
+  ['dragleave', 'drop'].forEach(ev => els.i2iDrop.addEventListener(ev, e => {
+    e.preventDefault(); els.i2iDrop.classList.remove('over');
+  }));
+  els.i2iDrop.addEventListener('drop', e => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) handleRefFile(f);
+  });
+  $('#i2iRemove').addEventListener('click', clearReference);
+  $('#i2iClearCfg').addEventListener('click', clearReference);
+
+  // 全局粘贴图片
+  document.addEventListener('paste', e => {
+    // 词库搜索框等输入场景不拦截
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const it of items) {
+      if (it.type && it.type.indexOf('image') === 0) {
+        const f = it.getAsFile();
+        if (f) {
+          e.preventDefault();
+          handleRefFile(f);
+          // 同步打开参数面板里的图生图区域
+          const acc = document.getElementById('accI2I');
+          if (acc) acc.open = true;
+          return;
+        }
+      }
+    }
+  });
+
+  // 强度滑杆（对话框区 + 参数面板，双向同步）
+  const syncStrength = (val, from) => {
+    const v = clamp(Number(val), 0, 1);
+    state.cfg.i2iStrength = v;
+    persist.cfg();
+    const out1 = $('#i2iStrengthOut'), out2 = $('#i2iStrengthOut2');
+    if (out1) out1.textContent = v.toFixed(2);
+    if (out2) out2.textContent = v.toFixed(2);
+    if (from !== 'strip') $('#i2iStrength').value = v;
+    if (from !== 'panel') $('#i2iStrength2').value = v;
+  };
+  $('#i2iStrength').addEventListener('input', e => syncStrength(e.target.value, 'strip'));
+  $('#i2iStrength2').addEventListener('input', e => syncStrength(e.target.value, 'panel'));
+
+  // 输出尺寸
+  els.i2iOutW.addEventListener('input', e => { state.cfg.i2iOutW = Number(e.target.value) || null; persist.cfg(); });
+  els.i2iOutH.addEventListener('input', e => { state.cfg.i2iOutH = Number(e.target.value) || null; persist.cfg(); });
+  $('#i2iFollowSize').addEventListener('change', e => {
+    state.cfg.i2iFollowSize = e.target.checked; persist.cfg();
+    const w = els.i2iOutW, h = els.i2iOutH;
+    w.disabled = e.target.checked; h.disabled = e.target.checked;
+  });
+  $('#i2iFormat').addEventListener('change', e => { state.cfg.i2iFormat = e.target.value; persist.cfg(); });
+  $('#mapImage').addEventListener('input', e => { state.cfg.mapImage = e.target.value; persist.cfg(); });
+  $('#mapStrength').addEventListener('input', e => { state.cfg.mapStrength = e.target.value; persist.cfg(); });
 
   /* --- Tab --- */
   $$('.tab').forEach(t => t.addEventListener('click', () => {
@@ -2392,6 +2510,159 @@ async function runMatrix() {
   }
 }
 
+/* ============================================================
+   图生图（Image-to-Image）
+   ============================================================ */
+const I2I_MAX_BYTES = 8 * 1024 * 1024;   // 单张上限 8MB
+const I2I_MAX_DIM   = 2048;              // 超过则等比压缩
+
+/* 读取文件 → dataURL，必要时压缩，返回 { dataUrl, base64, width, height, name, size } */
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\//.test(file.type)) { reject(new Error('请选择图片文件')); return; }
+    if (file.size > I2I_MAX_BYTES) {
+      reject(new Error(`图片过大（${(file.size / 1048576).toFixed(1)}MB），请压缩到 8MB 以内`));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const img = new Image();
+      img.onerror = () => reject(new Error('图片格式无法解析'));
+      img.onload = () => {
+        const needShrink = img.width > I2I_MAX_DIM || img.height > I2I_MAX_DIM;
+        if (!needShrink) {
+          resolve({
+            dataUrl, base64: dataUrl.split(',')[1] || '',
+            width: img.width, height: img.height,
+            name: file.name || 'reference.png', size: file.size,
+          });
+          return;
+        }
+        // 等比压缩到上限
+        const scale = I2I_MAX_DIM / Math.max(img.width, img.height);
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        const out = cv.toDataURL('image/jpeg', 0.92);
+        resolve({
+          dataUrl: out, base64: out.split(',')[1] || '',
+          width: w, height: h,
+          name: (file.name || 'reference').replace(/\.[^.]+$/, '') + '-resized.jpg',
+          size: Math.round(out.length * 0.75),
+        });
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function setReferenceImage(ref) {
+  state.cfg.refImage = ref ? {
+    dataUrl: ref.dataUrl, base64: ref.base64,
+    width: ref.width, height: ref.height,
+    name: ref.name, size: ref.size,
+  } : null;
+  persist.cfg();
+  renderReference();
+}
+
+function renderReference() {
+  const ref = state.cfg.refImage;
+  const strip = els.i2iStrip;
+  const has = !!(ref && ref.dataUrl);
+
+  strip.hidden = !has;
+  document.querySelector('.composer').classList.toggle('i2i-active', has);
+  // 参数面板里的控件
+  if (els.i2iDrop) els.i2iDrop.classList.toggle('hidden', has);
+  ['i2iFieldStrength', 'i2iFieldSize', 'i2iFieldFollow'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !has;
+  });
+  if (!has) return;
+
+  els.i2iThumb.src = ref.dataUrl;
+  els.i2iName.textContent = ref.name || 'reference.png';
+  els.i2iSize.textContent = `${ref.width}×${ref.height} · ${(ref.size / 1024).toFixed(0)} KB`;
+  if (els.i2iOutW && !els.i2iOutW.value) els.i2iOutW.placeholder = ref.width + '';
+  if (els.i2iOutH && !els.i2iOutH.value) els.i2iOutH.placeholder = ref.height + '';
+}
+
+async function handleRefFile(file) {
+  try {
+    const ref = await readImageFile(file);
+    setReferenceImage(ref);
+    toast(`参考图已载入 · ${ref.width}×${ref.height}`, 'ok', 2000);
+  } catch (e) {
+    toast('载入失败：' + (e.message || e), 'err', 3200);
+  }
+}
+
+function clearReference() {
+  setReferenceImage(null);
+  if (els.i2iFile) els.i2iFile.value = '';
+  toast('已移除参考图');
+}
+
+/* 图生图模式下，把参考图字段并入 payload */
+function applyImagePayload(payload) {
+  const ref = state.cfg.refImage;
+  if (!(ref && ref.dataUrl)) return payload;
+
+  const fmt = state.cfg.i2iFormat || 'dataurl';
+  const imgVal = fmt === 'base64' ? ref.base64 : ref.dataUrl;
+  const imgField = (state.cfg.mapImage || 'image').trim() || 'image';
+  payload[imgField] = imgVal;
+
+  const st = clamp(Number(state.cfg.i2iStrength ?? 0.6), 0, 1);
+  const stField = (state.cfg.mapStrength || 'strength').trim() || 'strength';
+  payload[stField] = st;
+
+  // 输出尺寸：跟随原图 or 用设定值
+  if (state.cfg.i2iFollowSize) {
+    const sizeField = (state.cfg.mapSize || 'size').trim() || 'size';
+    if (sizeField === 'size') payload.size = `${ref.width}x${ref.height}`;
+    else payload[sizeField] = `${ref.width}x${ref.height}`;
+    if (state.cfg.mapSize === 'width' || state.cfg.mapSize === 'height') {
+      payload.width = ref.width; payload.height = ref.height;
+    }
+  } else if (state.cfg.i2iOutW && state.cfg.i2iOutH) {
+    const sizeField = (state.cfg.mapSize || 'size').trim() || 'size';
+    if (sizeField === 'size') payload.size = `${state.cfg.i2iOutW}x${state.cfg.i2iOutH}`;
+    else payload[sizeField] = `${state.cfg.i2iOutW}x${state.cfg.i2iOutH}`;
+  }
+  return payload;
+}
+
+/* ============================================================
+   移动端 ⋯ 菜单
+   ============================================================ */
+function openMoreMenu() {
+  els.moreMenu.hidden = false;
+}
+function closeMoreMenu() {
+  els.moreMenu.hidden = true;
+}
+
+function handleMoreAction(action) {
+  closeMoreMenu();
+  switch (action) {
+    case 'theme':    $('#btnTheme').click(); break;
+    case 'matrix':   openMatrix(); break;
+    case 'download': $('#btnDownloadMode').click(); break;
+    case 'img2img':  $('#btnImg2Img').click(); break;
+    case 'clear':    $('#btnClearPrompt').click(); break;
+    case 'undo':     undoAppend(); break;
+    case 'help':     openModal('使用说明', HELP_HTML); break;
+    case 'close':    break;
+  }
+}
+
 /* ---------------- 主题 / 抽屉 ---------------- */
 function applyTheme(t) {
   state.ui.theme = t;
@@ -2464,6 +2735,15 @@ function init() {
   els.cntPreview = $('#cntPreview');
   els.listA = $('#listA');
   els.listB = $('#listB');
+  els.moreMenu = $('#moreMenu');
+  els.i2iStrip = $('#i2iStrip');
+  els.i2iThumb = $('#i2iThumb');
+  els.i2iName = $('#i2iName');
+  els.i2iSize = $('#i2iSize');
+  els.i2iFile = $('#i2iFile');
+  els.i2iDrop = $('#i2iDrop');
+  els.i2iOutW = $('#i2iOutW');
+  els.i2iOutH = $('#i2iOutH');
   els.charCount = $('#charCount');
   els.tokenEst = $('#tokenEst');
 

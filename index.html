@@ -28,11 +28,27 @@
 
   <div class="topbar-actions">
     <button class="btn ghost" id="btnTheme" title="切换主题">◐</button>
-    <button class="btn ghost" id="btnSettings" title="打开设置">⚙ 设置</button>
-    <button class="btn ghost mobile-only" id="btnToggleLib" title="提示词库">☰ 词库</button>
+    <button class="btn ghost desktop-only" id="btnSettings" title="打开设置">⚙ 设置</button>
+    <button class="btn ghost mobile-only" id="btnToggleLib" title="提示词库">☰</button>
     <button class="btn ghost mobile-only" id="btnToggleParams" title="参数">⚙</button>
+    <button class="btn ghost mobile-only" id="btnMore" title="更多">⋯</button>
   </div>
 </header>
+
+<!-- 移动端 ⋯ 菜单 -->
+<div class="more-menu" id="moreMenu" hidden>
+  <div class="more-sheet">
+    <div class="more-handle"></div>
+    <button class="more-item" data-more="theme"><span class="mi-ico">◐</span>切换浅色 / 深色</button>
+    <button class="more-item" data-more="matrix"><span class="mi-ico">⧉</span>组合出图</button>
+    <button class="more-item" data-more="download"><span class="mi-ico">⤓</span>批量下载</button>
+    <button class="more-item" data-more="img2img"><span class="mi-ico">🖼</span>图生图</button>
+    <button class="more-item" data-more="clear"><span class="mi-ico">✕</span>清空对话框</button>
+    <button class="more-item" data-more="undo"><span class="mi-ico">↺</span>撤销上次追加</button>
+    <button class="more-item" data-more="help"><span class="mi-ico">?</span>使用说明</button>
+    <button class="more-item cancel" data-more="close">取消</button>
+  </div>
+</div>
 
 <!-- ============ 主体三栏 ============ -->
 <main id="app">
@@ -89,9 +105,11 @@
       </div>
       <div class="stage-head-actions">
         <span class="combo-info" id="comboInfo"></span>
-        <button class="btn tiny ghost" id="btnMatrix" title="矩阵组合批量出图">⧉ 组合出图</button>
-        <button class="btn tiny ghost" id="btnDownloadMode" title="批量选择并下载">⤓ 批量下载</button>
-        <button class="btn tiny ghost" id="btnClearPrompt">清空对话框</button>
+        <button class="btn tiny ghost desktop-only" id="btnImg2Img" title="图生图：上传参考图">🖼 图生图</button>
+        <button class="btn tiny ghost desktop-only" id="btnMatrix" title="矩阵组合批量出图">⧉ 组合出图</button>
+        <button class="btn tiny ghost desktop-only" id="btnDownloadMode" title="批量选择并下载">⤓ 批量下载</button>
+        <button class="btn tiny ghost desktop-only" id="btnClearPrompt">清空对话框</button>
+        <button class="btn tiny ghost mobile-only" id="btnMoreStage" title="更多操作">⋯</button>
       </div>
     </div>
 
@@ -134,6 +152,27 @@
 
     <!-- 底部输入台 -->
     <div class="composer">
+      <!-- 图生图参考图区 -->
+      <div class="i2i-strip" id="i2iStrip" hidden>
+        <div class="i2i-thumb-wrap" id="i2iThumbWrap">
+          <img class="i2i-thumb" id="i2iThumb" alt="参考图">
+          <button class="i2i-remove" id="i2iRemove" title="移除参考图">✕</button>
+          <span class="i2i-badge">参考图</span>
+        </div>
+        <div class="i2i-info">
+          <div class="i2i-info-top">
+            <b id="i2iName">reference.png</b>
+            <span id="i2iSize"></span>
+          </div>
+          <div class="i2i-strength-row">
+            <label>参考强度</label>
+            <input type="range" id="i2iStrength" min="0" max="1" step="0.05" value="0.6">
+            <output id="i2iStrengthOut">0.60</output>
+          </div>
+          <small>强度越高越贴近原图，越低越接近纯文字描述</small>
+        </div>
+      </div>
+
       <div class="chips-row" id="chipsRow"></div>
       <div class="composer-main">
         <textarea id="promptBox" rows="3" placeholder="在这里组合你的提示词…&#10;（点左侧卡片可追加，Ctrl+Enter 开始绘制）" spellcheck="false"></textarea>
@@ -329,6 +368,65 @@
         </div>
       </details>
 
+      <details class="acc" id="accI2I">
+        <summary>图生图 · 参考图</summary>
+        <div class="acc-body">
+          <div class="note-box">
+            上传或粘贴一张参考图，配合提示词生成变化版本。参考图只存在于本机浏览器。
+          </div>
+
+          <div class="i2i-drop" id="i2iDrop">
+            <input type="file" id="i2iFile" accept="image/*" hidden>
+            <div class="i2i-drop-ico">🖼</div>
+            <div class="i2i-drop-txt">
+              <b>点击选择图片</b>
+              <small>或拖拽到此处，也支持 Ctrl+V 粘贴</small>
+            </div>
+          </div>
+
+          <div class="field" id="i2iFieldStrength" hidden>
+            <label>参考强度 <output id="i2iStrengthOut2">0.60</output></label>
+            <input type="range" id="i2iStrength2" min="0" max="1" step="0.05" value="0.6">
+            <small>越低越自由发挥，越高越贴近原图</small>
+          </div>
+
+          <div class="field-row two" id="i2iFieldSize" hidden>
+            <div class="field">
+              <label>输出宽</label>
+              <input type="number" id="i2iOutW" min="256" max="4096" step="64" placeholder="跟随原图">
+            </div>
+            <div class="field">
+              <label>输出高</label>
+              <input type="number" id="i2iOutH" min="256" max="4096" step="64" placeholder="跟随原图">
+            </div>
+          </div>
+          <div class="field-row" id="i2iFieldFollow" hidden>
+            <label class="inline-check"><input type="checkbox" id="i2iFollowSize" checked><span>输出尺寸跟随参考图</span></label>
+          </div>
+
+          <div class="field">
+            <label>参考图字段名</label>
+            <input type="text" id="mapImage" placeholder="image" spellcheck="false">
+            <small>默认 <code>image</code>。部分接口用 <code>init_images</code>（SD WebUI）或 <code>image_base64</code></small>
+          </div>
+          <div class="field">
+            <label>强度字段名</label>
+            <input type="text" id="mapStrength" placeholder="strength" spellcheck="false">
+            <small>默认 <code>strength</code>，SD WebUI 用 <code>denoising_strength</code></small>
+          </div>
+          <div class="field">
+            <label>图片传递方式</label>
+            <select id="i2iFormat">
+              <option value="dataurl">完整 data URI（推荐，兼容性最好）</option>
+              <option value="base64">纯 base64 字符串</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <button class="btn tiny ghost" id="i2iClearCfg">清除参考图</button>
+          </div>
+        </div>
+      </details>
+
       <details class="acc">
         <summary>云同步 · GitHub</summary>
         <div class="acc-body">
@@ -407,13 +505,11 @@
       <div class="matrix-col" data-side="A">
         <div class="matrix-col-head">
           <span class="matrix-badge a">A</span>
-          <input type="text" class="matrix-col-name" id="nameA" value="主体 · 人物及服装">
+          <input type="text" class="matrix-col-name" id="nameA" value="主体 · 人物及服装" spellcheck="false">
         </div>
         <div class="matrix-col-hint">这一组用来锁定主体一致性</div>
         <textarea class="matrix-ta" id="listA" rows="7" placeholder="每行一条，例如：&#10;young asian woman, white silk shirt, denim skirt&#10;young asian woman, black lace top, leather pants"></textarea>
-        <div class="matrix-from-lib">
-          <label class="inline-check"><input type="checkbox" id="useTextA" checked><span>与下方公共前缀组合</span></label>
-        </div>
+        <div class="matrix-col-tip">一行 = 一个变量，与 B 组交叉组合</div>
       </div>
 
       <div class="matrix-mid">
@@ -424,12 +520,12 @@
       <div class="matrix-col" data-side="B">
         <div class="matrix-col-head">
           <span class="matrix-badge b">B</span>
-          <input type="text" class="matrix-col-name" id="nameB" value="动作 · 姿势">
+          <input type="text" class="matrix-col-name" id="nameB" value="动作 · 姿势" spellcheck="false">
         </div>
         <div class="matrix-col-hint">这一组用来变化姿势与构图</div>
         <textarea class="matrix-ta" id="listB" rows="7" placeholder="每行一条，例如：&#10;standing, hands on hips, looking at camera&#10;sitting on chair, legs crossed, side view"></textarea>
-        <div class="matrix-from-lib">
-          <label class="inline-check"><input type="checkbox" id="useLibB" checked><span>从词库「动作」类分组自动填充</span></label>
+        <div class="matrix-col-tip">
+          <button class="link-btn" id="matrixPickGroupB">从词库「动作/姿势」分组填充</button>
         </div>
       </div>
     </div>
