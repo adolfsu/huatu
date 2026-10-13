@@ -1750,3 +1750,14 @@ code {
   font-size: 11px; color: var(--text-3); text-align: right;
   user-select: none;
 }
+
+/* 历史卡片：大图 / 缩略图角标 */
+.hist-badge {
+  position: absolute; right: 6px; bottom: 42px;
+  font-size: 9.5px; line-height: 1;
+  padding: 3px 6px; border-radius: 999px;
+  background: rgba(20,24,36,.62); color: #fff;
+  letter-spacing: .3px; pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+.hist-badge.full { background: rgba(91,91,214,.92); }

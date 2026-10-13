@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.6.2';
+const APP_VERSION = '1.7.0';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -337,7 +337,7 @@ function loadAll() {
   if (cfgRaw.mode && !cfgRaw.sizeString) { /* noop */ }
   state.cfg = cfg;
 
-  state.history = store.read(LS.hist, []) || [];
+  state.history = [];   // 由 IndexedDB 异步载入（见 init 里的 histMigrateLS/reloadHistory）
   state.ui.theme  = store.read(LS.theme, 'light') || 'light';
   const ui = store.read(LS.ui, {}) || {};
   state.ui.sort = ui.sort || 'manual';
@@ -353,7 +353,6 @@ function cfgForStorage() {
 const persist = {
   lib:   debounce(() => store.write(LS.lib, state.lib), 350),
   cfg:   debounce(() => store.write(LS.cfg, cfgForStorage()), 350),
-  hist:  debounce(() => store.write(LS.hist, state.history), 500),
   ui:    debounce(() => store.write(LS.ui, { sort: state.ui.sort }), 350),
 };
 
@@ -698,6 +697,211 @@ function renderResults() {
   }).join('');
 }
 
+/* ============================================================
+   生成历史存储（IndexedDB）
+   ------------------------------------------------------------
+   为什么不用 localStorage：它只有约 5MB 且只能存文本，一张
+   1024×1024 的图转成 base64 就要 1.4MB，两三张就写满，写满后
+   所有改动静默失败。所以改成：
+     · 大图原图 → IndexedDB（二进制存储，无膨胀），只保留最新 10 张
+     · 缩略图   → IndexedDB，永久保留（单张约 20KB）
+     · 提示词   → 记录里，几乎不占空间
+   ============================================================ */
+const HIST_DB    = 'prompt-painter';
+const HIST_STORE = 'hist';
+const KEEP_FULL  = 10;    // 保留大图原图的条数（用户策略：最近 10 张）
+const THUMB_MAX  = 256;   // 缩略图最长边
+
+let _histDBP = null;
+function histDB() {
+  if (_histDBP) return _histDBP;
+  _histDBP = new Promise((resolve, reject) => {
+    if (!window.indexedDB) { reject(new Error('浏览器不支持 IndexedDB')); return; }
+    const req = indexedDB.open(HIST_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(HIST_STORE)) {
+        const os = db.createObjectStore(HIST_STORE, { keyPath: 'id' });
+        os.createIndex('time', 'time');
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return _histDBP;
+}
+
+function histPut(rec) {
+  return histDB().then(db => new Promise((res, rej) => {
+    const tx = db.transaction(HIST_STORE, 'readwrite');
+    tx.objectStore(HIST_STORE).put(rec);
+    tx.oncomplete = () => res(true);
+    tx.onerror = () => rej(tx.error);
+  }));
+}
+function histDeleteAll() {
+  return histDB().then(db => new Promise((res, rej) => {
+    const tx = db.transaction(HIST_STORE, 'readwrite');
+    tx.objectStore(HIST_STORE).clear();
+    tx.oncomplete = () => res(true);
+    tx.onerror = () => rej(tx.error);
+  }));
+}
+function histGetAll() {
+  return histDB().then(db => new Promise((res, rej) => {
+    const req = db.transaction(HIST_STORE, 'readonly').objectStore(HIST_STORE).getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror = () => rej(req.error);
+  })).catch(() => []);
+}
+
+/* 图片元素载入（远程图走 CORS，失败则放弃生成缩略图） */
+function loadImgEl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (!/^data:|^blob:/.test(src)) img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('图片载入失败'));
+    img.src = src;
+  });
+}
+
+/* canvas 生成缩略图 Blob；被 CORS 污染或编码失败时返回 null */
+async function makeThumbBlob(src, max) {
+  max = max || THUMB_MAX;
+  try {
+    const img = await loadImgEl(src);
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    if (!w || !h) return null;
+    const scale = Math.min(1, max / Math.max(w, h));
+    const cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+    const cv = document.createElement('canvas');
+    cv.width = cw; cv.height = ch;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0, cw, ch);
+    const blob = await new Promise(r => cv.toBlob(r, 'image/webp', 0.72));
+    if (blob) return blob;
+    return await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.75));
+  } catch (e) {
+    return null;   // 跨域污染等情况：降级为只存地址，不生成缩略图
+  }
+}
+
+/* dataURL / blobURL → Blob（无损保留原始字节） */
+async function srcToBlob(src) {
+  if (/^data:/.test(src)) return vsDataUrlToBlob(src);
+  if (/^blob:/.test(src)) { try { return await (await fetch(src)).blob(); } catch (e) { return null; } }
+  return null;
+}
+
+/* 写入若干条历史（生成成功后调用） */
+async function histAdd(items) {
+  if (!items || !items.length) return 0;
+  let n = 0;
+  for (const it of items) {
+    const rec = {
+      id: it.id, time: it.time || Date.now(), prompt: it.prompt || '', kind: 'img',
+      thumb: null, full: null, srcUrl: '', w: 0, h: 0,
+    };
+    try {
+      if (/^https?:/i.test(it.src)) {
+        rec.srcUrl = it.src;                                  // 远程图：只记地址，不占本地空间
+      } else {
+        rec.full = await srcToBlob(it.src);
+        rec.thumb = await makeThumbBlob(it.src);
+        if (!rec.thumb && rec.full) rec.thumb = await makeThumbBlob(URL.createObjectURL(rec.full));
+      }
+    } catch (e) { /* 至少把提示词留下 */ }
+    await histPut(rec);
+    n++;
+  }
+  await histEnforce();
+  return n;
+}
+
+/* 只让最新 KEEP_FULL 条保留大图，其余释放（缩略图与提示词永久保留） */
+async function histEnforce() {
+  const all = (await histGetAll()).sort((a, b) => b.time - a.time);
+  for (let i = 0; i < all.length; i++) {
+    const r = all[i];
+    if (i >= KEEP_FULL && r.full) { r.full = null; await histPut(r); }
+  }
+  return all.length;
+}
+
+/* 从 IDB 读回内存态；缩略图转 objectURL 供 <img> 直接用 */
+const _histURLs = [];
+const _histFull = new Map();     // id → 大图 Blob（仅最近 10 张会有）
+function revokeHistURLs() {
+  while (_histURLs.length) { try { URL.revokeObjectURL(_histURLs.pop()); } catch (e) {} }
+}
+
+async function reloadHistory() {
+  const all = (await histGetAll()).sort((a, b) => b.time - a.time);
+  revokeHistURLs();
+  _histFull.clear();
+  state.history = all.map((r, i) => {
+    let src = r.srcUrl || '';
+    if (r.thumb) { src = URL.createObjectURL(r.thumb); _histURLs.push(src); }
+    if (r.full) _histFull.set(r.id, r.full);
+    return {
+      id: r.id, kind: 'img', prompt: r.prompt, time: r.time, src,
+      srcRaw: r.srcUrl || '',        // 远程图地址（也就是它的大图）
+      hasFull: !!(r.full || r.srcUrl),
+      rank: i,                        // 0 起，< KEEP_FULL 表示还在「大图区」
+    };
+  });
+  return state.history;
+}
+
+/* 取某条历史的大图（懒加载）；没有大图则返回 '' */
+function histFullSrc(id) {
+  const rec = state.history.find(x => x.id === id);
+  if (!rec) return '';
+  if (rec._fullSrc) return rec._fullSrc;
+  const blob = _histFull.get(id);
+  if (blob) {
+    const u = URL.createObjectURL(blob);
+    _histURLs.push(u);
+    rec._fullSrc = u;
+    return u;
+  }
+  if (rec.srcRaw) return rec.srcRaw;
+  return '';
+}
+
+/* 旧版本把 base64 历史存在 localStorage 里 → 一次性迁移进 IDB 并清掉旧键 */
+async function histMigrateLS() {
+  const old = store.read(LS.hist, null);
+  if (!Array.isArray(old)) return 0;
+  if (!old.length) { store.remove(LS.hist); return 0; }
+
+  const exist = await histGetAll();
+  const have = new Set(exist.map(r => r.id));
+  const sorted = old.slice().sort((a, b) => (b.time || 0) - (a.time || 0));
+  let n = 0;
+  for (const it of sorted) {
+    if (!it || !it.id || have.has(it.id)) continue;
+    const rec = {
+      id: it.id, time: it.time || Date.now(), prompt: it.prompt || '', kind: 'img',
+      thumb: null, full: null, srcUrl: '', w: 0, h: 0,
+    };
+    try {
+      if (it.src && /^data:/.test(it.src)) {
+        rec.full = vsDataUrlToBlob(it.src);
+        rec.thumb = await makeThumbBlob(it.src);
+      } else if (it.src) {
+        rec.srcUrl = it.src;
+      }
+    } catch (e) {}
+    await histPut(rec);
+    n++;
+  }
+  await histEnforce();
+  store.remove(LS.hist);   // 旧键是配额元凶，迁移完立即删除
+  return n;
+}
+
 function renderHistory() {
   const h = state.history;
   els.histCount.textContent = h.length;
@@ -715,6 +919,7 @@ function renderHistory() {
     return `<div class="hist-card ${picked}" data-hid="${r.id}" data-act="open-hist">
       ${state.ui.dlMode ? `<div class="pick-box" data-act="toggle-pick" data-id="${r.id}"></div>` : ''}
       <img src="${esc(r.src)}" alt="" loading="lazy">
+      <span class="hist-badge${r.hasFull ? ' full' : ''}">${r.hasFull ? '原图' : '小图'}</span>
       <div class="hist-card-meta">
         <div class="txt" title="${esc(r.prompt)}">${esc(r.prompt)}</div>
         <div>${fmtTime(r.time)}</div>
@@ -845,6 +1050,34 @@ async function postImages(endpoint, headers, payload) {
   }
 }
 
+/* 请求 + 参数降级重试（单图 / 矩阵共用，避免两条路径行为不一致）
+   ① 400/422 且报错点名参数不支持 → 摘掉该参数重试
+   ② 报错点名字段类型不符（如要求 number 实发 string）→ 翻转类型重试 */
+async function postImagesSmart(endpoint, headers, payload) {
+  let result = await postImages(endpoint, headers, payload);
+  if (result.ok) return result;
+
+  const firstMsg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) ||
+                   result.text || '';
+  const stripKeys = pickParamsToStrip(result.status, firstMsg, payload);
+  let retryPayload = null, note = '';
+  if (stripKeys.length) {
+    retryPayload = Object.assign({}, payload);
+    stripKeys.forEach(k => delete retryPayload[k]);
+    note = `接口不认参数 ${stripKeys.join('/')}，已自动去掉重试`;
+  } else {
+    const coerced = vsCoercePayload(payload, firstMsg);
+    if (coerced) { retryPayload = coerced; note = '接口要求字段类型不同，已自动纠正重试'; }
+  }
+  if (!retryPayload) return result;
+
+  if (state.cfg.debug && els.debugPre) {
+    els.debugPre.textContent += `\n\n── 降级重试 ──\n` + JSON.stringify(retryPayload, null, 2);
+  }
+  toast(note, 'warn', 3000);
+  return postImages(endpoint, headers, retryPayload);
+}
+
 /* 从报错信息里推断哪些参数不被支持，需要摘掉重试。
    覆盖常见别名：aspect_ratio / image_size / dimensions 等 → 尺寸类 */
 function pickParamsToStrip(status, errMsg, payload) {
@@ -913,29 +1146,7 @@ async function generate() {
   if (state.cfg.apiKey.trim()) headers['Authorization'] = 'Bearer ' + state.cfg.apiKey.trim();
 
   try {
-    let result = await postImages(endpoint, headers, payload);
-
-    // 智能降级：400/422 且报错点名了参数 → 摘掉后重试一次；类型不符 → 纠正后重试一次
-    if (!result.ok) {
-      const firstMsg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) || result.text || '';
-      const stripKeys = pickParamsToStrip(result.status, firstMsg, payload);
-      let retryPayload = null, note = '';
-      if (stripKeys.length) {
-        retryPayload = Object.assign({}, payload);
-        stripKeys.forEach(k => delete retryPayload[k]);
-        note = `接口不认参数 ${stripKeys.join('/')}，已自动去掉重试`;
-      } else {
-        const coerced = vsCoercePayload(payload, firstMsg);
-        if (coerced) { retryPayload = coerced; note = '接口要求字段类型不同，已自动纠正重试'; }
-      }
-      if (retryPayload) {
-        if (state.cfg.debug) {
-          els.debugPre.textContent += `\n\n── 降级重试 ──\n` + JSON.stringify(retryPayload, null, 2);
-        }
-        toast(note, 'warn', 3000);
-        result = await postImages(endpoint, headers, retryPayload);
-      }
-    }
+    const result = await postImagesSmart(endpoint, headers, payload);
 
     if (!result.ok) {
       const msg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) ||
@@ -951,13 +1162,11 @@ async function generate() {
 
     state.ui.results = imgs.map(im => ({ id: uid(), kind: 'img', src: im.src, prompt, time: Date.now() }));
 
-    // 归档历史（最多保留 200 条）
-    imgs.forEach(im => {
-      state.history.unshift({ id: uid(), kind: 'img', src: im.src, prompt, time: Date.now() });
-    });
-    if (state.history.length > 200) state.history.length = 200;
-    persist.hist();
+    // 归档历史：最新 10 张存大图原图，其余只留缩略图 + 提示词（见 histAdd/histEnforce）
+    await histAdd(state.ui.results.map(r => ({ id: r.id, src: r.src, prompt, time: r.time })));
+    await reloadHistory();
     renderHistory();
+    updateStoreStat();
     renderResults();
     bumpUsage(raw);
     toast(`绘制完成 · ${state.ui.results.length} 张`, 'ok');
@@ -1481,12 +1690,25 @@ function updateDangerNote() {
 
 function updateStoreStat() {
   let bytes = 0;
-  [LS.lib, LS.cfg, LS.hist, LS.ui].forEach(k => {
+  [LS.lib, LS.cfg, LS.ui].forEach(k => {
     const v = localStorage.getItem(k);
     if (v) bytes += v.length;
   });
   const kb = (bytes / 1024).toFixed(1);
-  els.storeStat.textContent = `本地占用约 ${kb} KB · 生成历史 ${state.history.length} 条 · 提示词 ${state.lib.reduce((n, g) => n + g.items.length, 0)} 条`;
+  const fullCnt = _histFull.size;
+  const line = () => {
+    els.storeStat.textContent =
+      `设置占用 ${kb} KB · 历史 ${state.history.length} 条（其中大图 ${fullCnt} 张，其余仅缩略图 + 提示词）` +
+      ` · 提示词 ${state.lib.reduce((n, g) => n + g.items.length, 0)} 条` + (els.storeStat.dataset.extra || '');
+  };
+  line();
+  // 图片库体积（IndexedDB）异步补充
+  if (navigator.storage && navigator.storage.estimate) {
+    navigator.storage.estimate().then(est => {
+      els.storeStat.dataset.extra = ` · 图片库约 ${((est.usage || 0) / 1048576).toFixed(1)} MB`;
+      line();
+    }).catch(() => {});
+  }
 }
 
 /* ---------------- 尺寸预设 ---------------- */
@@ -1730,7 +1952,11 @@ function bindEvents() {
     if (!card) return;
     if (state.ui.dlMode) { togglePick(card.dataset.hid); return; }
     const h = state.history.find(x => x.id === card.dataset.hid);
-    if (h) openLightbox(h.src, h.prompt);
+    if (h) {
+      const full = histFullSrc(h.id);
+      if (!full) toast('这张的大图已释放（只保留最近 10 张），当前显示缩略图', 'warn', 3200);
+      openLightbox(full || h.src, h.prompt);
+    }
   });
 
   /* --- 批量下载工具条 --- */
@@ -2063,8 +2289,11 @@ function bindEvents() {
     }
     closeModal();
   });
-  $('#btnWipeGen').addEventListener('click', () => {
-    state.history = []; persist.hist(); renderHistory(); updateStoreStat();
+  $('#btnWipeGen').addEventListener('click', async () => {
+    await histDeleteAll();
+    await reloadHistory();
+    renderHistory();
+    updateStoreStat();
     toast('生成历史已清空', 'ok');
   });
   $('#btnWipeAll').addEventListener('click', () => {
@@ -2073,9 +2302,10 @@ function bindEvents() {
       <p style="color:var(--danger)">如果已经配置了云同步，建议先「上传到云端」备份，或先导出 JSON。</p>
       <div class="field-row"><button class="btn tiny danger" data-wipe="1">确认清除全部</button></div>`);
   });
-  els.modalBody.addEventListener('click', e => {
+  els.modalBody.addEventListener('click', async e => {
     if (!e.target.closest('[data-wipe]')) return;
     [LS.lib, LS.cfg, LS.hist, LS.ui].forEach(store.remove);
+    try { await histDeleteAll(); } catch (err) {}
     location.reload();
   });
 }
@@ -2356,8 +2586,10 @@ async function downloadPicked() {
     const it = items[i];
     const stamp = fmtFileStamp(it.time || Date.now());
     const name = `painting-${stamp}-${String(i + 1).padStart(2, '0')}.png`;
+    // 历史条目优先下载大图原图；结果区条目用自身 src
+    const full = _histFull.has(it.id) || it.srcRaw ? histFullSrc(it.id) : '';
     // eslint-disable-next-line no-await-in-loop
-    const ok = await downloadImage(it.src, name);
+    const ok = await downloadImage(full || it.src, name);
     if (ok) okCnt++; else fallbackCnt++;
     await new Promise(r => setTimeout(r, 320)); // 避免浏览器拦截连续下载
   }
@@ -2523,17 +2755,7 @@ async function runMatrix() {
 
     try {
       const payload = buildPayload(row.text);
-      let result = await postImages(endpoint, headers, payload);
-
-      if (!result.ok) {
-        const firstMsg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) || result.text || '';
-        const stripKeys = pickParamsToStrip(result.status, firstMsg, payload);
-        if (stripKeys.length) {
-          const retryPayload = Object.assign({}, payload);
-          stripKeys.forEach(k => delete retryPayload[k]);
-          result = await postImages(endpoint, headers, retryPayload);
-        }
-      }
+      const result = await postImagesSmart(endpoint, headers, payload);
 
       if (!result.ok) {
         const msg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) ||
@@ -2549,11 +2771,8 @@ async function runMatrix() {
       if (at >= 0) state.ui.results.splice(at, 1, ...newItems);
       else state.ui.results.push(...newItems);
 
-      newItems.forEach(it => {
-        collected.push(it);
-        state.history.unshift({ id: uid(), kind: 'img', src: it.src, prompt: it.prompt, time: Date.now() });
-      });
-      if (state.history.length > 200) state.history.length = 200;
+      newItems.forEach(it => collected.push(it));
+      await histAdd(newItems.map(it => ({ id: it.id, src: it.src, prompt: it.prompt, time: it.time })));
       okCnt++;
     } catch (e) {
       let msg = e.message || String(e);
@@ -2568,7 +2787,7 @@ async function runMatrix() {
     bumpUsage(row.text);
   }
 
-  persist.hist();
+  await reloadHistory();
   renderHistory();
   state.busy = false;
   state.matrix.running = false;
@@ -3867,6 +4086,17 @@ function init() {
   renderChips();
   renderHistory();
   renderResults();
+
+  // 生成历史从 IndexedDB 载入（首次会把旧版存在 localStorage 的 base64 历史迁移进来）
+  (async () => {
+    try {
+      const n = await histMigrateLS();
+      if (n) toast(`已把 ${n} 条旧历史迁移到图片库`, '', 2800);
+      await reloadHistory();
+    } catch (e) { state.history = []; }
+    renderHistory();
+    updateStoreStat();
+  })();
 
   // 恢复批量下载模式（刷新前若处于该模式）
   const dlState = store.read(LS.dl, null);

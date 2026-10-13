@@ -1,0 +1,17 @@
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 临时与日志
+*.log
+*.tmp
+*.bak
+.workbuddy/
+
+# 本地私有配置（含密钥，切勿提交）
+config.local.json
+.env
+.env.*

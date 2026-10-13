@@ -1,6 +1,6 @@
 # Prompt Painter · 提示词绘画工作台
 
-> 当前版本 **v1.6.2** · 更新历史见 [CHANGELOG.md](CHANGELOG.md)
+> 当前版本 **v1.7.0** · 更新历史见 [CHANGELOG.md](CHANGELOG.md)
 
 纯前端单页应用：接 OpenAI 兼容画图 API 出图，左侧词库把常用提示词分组收藏，
 **点一下 = 追加到对话框（不替换）**，像搭积木一样组合出图。
