@@ -1,0 +1,2101 @@
+/* ============================================================
+   Prompt Painter · 提示词绘画工作台
+   纯前端 · 无构建 · OpenAI 兼容图片接口 + GitHub 云同步
+   ============================================================ */
+(() => {
+'use strict';
+
+/* ---------------- 常量 ---------------- */
+const LS = {
+  lib:     'pp.library.v1',
+  cfg:     'pp.config.v1',
+  hist:    'pp.history.v1',
+  theme:   'pp.theme.v1',
+  ui:      'pp.ui.v1',
+  seedVer: 'pp.seedver.v1',
+};
+
+/* 内置示例库版本号。改动 seedLibrary() 内容时递增，
+   用于提示老用户「示例库有更新」 */
+const SEED_VERSION = 2;
+
+const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
+
+const SIZE_PRESETS = [
+  { label: '正方形', w: 1024, h: 1024 },
+  { label: '竖版 3:4', w: 896,  h: 1152 },
+  { label: '横版 4:3', w: 1152, h: 896  },
+  { label: '竖屏 9:16', w: 768, h: 1344 },
+  { label: '宽屏 16:9', w: 1344, h: 768 },
+  { label: '小图快出', w: 512,  h: 512  },
+];
+
+/* 人像摄影模板（可单独载入） */
+function portraitLibrary() {
+  return seedLibrary().slice(0, 8);
+}
+
+/* 内置示例词库：以「人像摄影」为默认场景，兼顾电商产品图，开箱即用 */
+function seedLibrary() {
+  const g = (name, color, items) => ({
+    id: uid(), name, color, collapsed: false,
+    items: items.map(t => ({
+      id: uid(), text: t, usage: 0, lastUsed: 0, tags: [],
+    })),
+  });
+  return [
+    g('① 人像·主体', GROUP_COLORS[0], [
+      'young asian woman, 25 years old, elegant and confident',
+      'asian man, 30s, mature and calm expression',
+      'elderly person with kind eyes, weathered face, life stories',
+      'child, 8 years old, innocent bright smile',
+      'professional female executive in tailored suit',
+    ]),
+    g('② 人像·五官特写', GROUP_COLORS[1], [
+      'delicate facial features, symmetrical face, flawless skin texture',
+      'expressive eyes, bright catchlight in iris, long eyelashes',
+      'natural eyebrows, subtle makeup, rosy lips',
+      'freckles on nose bridge, natural skin pores, realistic texture',
+      'sharp jawline, high cheekbones, refined profile',
+    ]),
+    g('③ 人像·妆造', GROUP_COLORS[2], [
+      'natural no-makeup makeup look, dewy skin, bare lips',
+      'elegant evening makeup, smoky eyes, bold red lip',
+      'traditional chinese hanfu, elaborate hairpin, silk fabric',
+      'minimalist white shirt, clean styling, silver stud earrings',
+      'tousled wavy hair, soft flyaways, windswept styling',
+    ]),
+    g('④ 人像·光线', GROUP_COLORS[3], [
+      'soft diffused window light, gentle shadow on cheek',
+      'Rembrandt lighting, dramatic triangle of light on cheek',
+      'golden hour backlight, glowing hair rim, warm halo',
+      'studio beauty light, butterfly lighting, even skin tone',
+      'neon signage light, cyan and magenta split lighting',
+    ]),
+    g('⑤ 人像·镜头', GROUP_COLORS[4], [
+      '85mm portrait lens, f/1.4, creamy bokeh background',
+      '50mm lens, f/2.0, natural field of view, half body shot',
+      'close-up headshot, shallow depth of field, eyelash level',
+      'full body shot, 35mm, environmental portrait with context',
+      'macro detail shot of eye and skin texture',
+    ]),
+    g('⑥ 画质基础', GROUP_COLORS[5], [
+      'masterpiece, best quality, ultra detailed, 8k uhd',
+      'sharp focus, high resolution, professional photography',
+      'hyperrealistic skin detail, cinematic color grading',
+      'HDR, physically based rendering, global illumination',
+    ]),
+    g('⑦ 氛围情绪', GROUP_COLORS[6], [
+      'serene and contemplative mood, quiet atmosphere',
+      'joyful candid laughter, natural unposed moment',
+      'melancholic mood, soft desaturated tones, film grain',
+      'confident editorial fashion mood, high fashion energy',
+    ]),
+    g('⑧ 背景场景', GROUP_COLORS[7] || GROUP_COLORS[0], [
+      'blurred city street at dusk, bokeh streetlights',
+      'minimalist studio backdrop, seamless neutral gray',
+      'sunlit cafe interior, warm wooden tones, soft out of focus',
+      'lush green garden, dappled light through leaves',
+      'plain dark background, subject isolation, studio setting',
+    ]),
+    g('⑨ 产品电商', GROUP_COLORS[0], [
+      'product photography, clean white background, centered composition',
+      'reflective floor, subtle drop shadow, e-commerce ready',
+      'floating product, dynamic splash, advertising style',
+      'flat lay, top-down view, minimalist prop styling',
+    ]),
+    g('⑩ 色彩风格', GROUP_COLORS[2], [
+      'vibrant color palette, high saturation, punchy contrast',
+      'muted pastel tones, soft desaturated film look',
+      'monochrome with a single accent color',
+      'morandi color scheme, elegant low saturation',
+      'warm teal and orange cinematic grade',
+    ]),
+    g('⑪ 画风切换', GROUP_COLORS[3], [
+      'photorealistic, DSLR photo, ultra sharp detail',
+      '3D render, octane render, blender, clay material',
+      'watercolor illustration, hand painted texture',
+      'flat vector illustration, minimal geometric shapes',
+      'anime style, cel shading, clean lineart',
+    ]),
+    g('⑫ 排版留白', GROUP_COLORS[4], [
+      'negative space, clean composition, room for text overlay',
+      'rule of thirds, balanced layout, visual hierarchy',
+      'centered symmetrical composition',
+    ]),
+  ];
+}
+
+/* ---------------- 工具函数 ---------------- */
+let _seq = 0;
+function uid() {
+  _seq += 1;
+  return Date.now().toString(36) + '-' + _seq.toString(36) + '-' +
+         Math.random().toString(36).slice(2, 7);
+}
+const $  = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+function toast(msg, type = '', ms = 2200) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  $('#toastWrap').appendChild(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 220);
+  }, ms);
+}
+
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((res, rej) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); res(); } catch (e) { rej(e); }
+    finally { ta.remove(); }
+  });
+}
+
+/* 中文按 1 字 ≈ 1 token，英文按 1 词 ≈ 1.3 token 粗估 */
+function estimateTokens(text) {
+  if (!text.trim()) return 0;
+  const cjk = (text.match(/[\u4e00-\u9fa5\u3040-\u30ff]/g) || []).length;
+  const rest = text.replace(/[\u4e00-\u9fa5\u3040-\u30ff]/g, ' ');
+  const words = rest.split(/[\s,，、;；]+/).filter(Boolean).length;
+  return Math.round(cjk * 1.05 + words * 1.3);
+}
+
+/* 清理提示词文本：合并多余逗号与空格，去首尾标点 */
+function normalizePrompt(text) {
+  return String(text)
+    .replace(/\s+/g, ' ')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/,{2,}/g, ',')
+    .replace(/^[\s,，、;；]+/, '')
+    .replace(/[\s,，、;；]+$/, '')
+    .trim();
+}
+
+/* ---------------- 状态 ---------------- */
+const state = {
+  lib: [],
+  cfg: {},
+  history: [],
+  ui: { theme: 'light', sort: 'manual', search: '', picked: [], chips: [] },
+  undoStack: [],
+  busy: false,
+};
+
+function defaultCfg() {
+  return {
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: '',
+    model: 'gpt-image-1',
+    width: 1024,
+    height: 1024,
+    sizeString: false,
+    count: 1,
+    quality: '',
+    style: '',
+    responseFormat: '',
+    negative: '',
+    useNegative: false,
+    mapSize: '',
+    mapNegative: '',
+    extraJson: '',
+    debug: false,
+    appendJoin: true,
+    dedupe: true,
+    gh: {
+      owner: '', repo: '', branch: 'main', path: 'prompts.json',
+      token: '', autoSync: true, publicRead: false, lastSync: 0,
+    },
+  };
+}
+
+const store = {
+  read(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const v = JSON.parse(raw);
+      return v == null ? fallback : v;
+    } catch (e) { return fallback; }
+  },
+  write(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); return true; }
+    catch (e) {
+      if (String(e).includes('Quota')) toast('本地存储已满，请清理历史记录', 'err');
+      return false;
+    }
+  },
+  remove(key) { try { localStorage.removeItem(key); } catch (e) {} },
+};
+
+/* 兼容并迁移旧版本数据结构 */
+function loadAll() {
+  const base = defaultCfg();
+
+  let lib = store.read(LS.lib, null);
+  if (!lib || !Array.isArray(lib)) lib = seedLibrary();
+  // 兼容早期扁平格式
+  lib = lib.map(gr => ({
+    id: gr.id || uid(),
+    name: gr.name || '未命名分组',
+    color: gr.color || GROUP_COLORS[0],
+    collapsed: !!gr.collapsed,
+    items: (Array.isArray(gr.items) ? gr.items : []).map(it => ({
+      id: it.id || uid(),
+      text: it.text || it.prompt || '',
+      usage: it.usage || 0,
+      lastUsed: it.lastUsed || 0,
+      tags: Array.isArray(it.tags) ? it.tags : [],
+    })).filter(it => it.text),
+  }));
+  state.lib = lib;
+
+  const cfgRaw = store.read(LS.cfg, {}) || {};
+  const cfg = Object.assign(base, cfgRaw);
+  cfg.gh = Object.assign(base.gh, cfgRaw.gh || {});
+  // 旧字段迁移
+  if (cfgRaw.mode && !cfgRaw.sizeString) { /* noop */ }
+  state.cfg = cfg;
+
+  state.history = store.read(LS.hist, []) || [];
+  state.ui.theme  = store.read(LS.theme, 'light') || 'light';
+  const ui = store.read(LS.ui, {}) || {};
+  state.ui.sort = ui.sort || 'manual';
+}
+
+const persist = {
+  lib:   debounce(() => store.write(LS.lib, state.lib), 350),
+  cfg:   debounce(() => store.write(LS.cfg, state.cfg), 350),
+  hist:  debounce(() => store.write(LS.hist, state.history), 500),
+  ui:    debounce(() => store.write(LS.ui, { sort: state.ui.sort }), 350),
+};
+
+/* ---------------- 词库 CRUD ---------------- */
+function findGroup(gid) { return state.lib.find(g => g.id === gid); }
+function findItem(gid, iid) {
+  const g = findGroup(gid);
+  return g ? g.items.find(i => i.id === iid) : null;
+}
+
+function addGroup(name) {
+  const g = {
+    id: uid(),
+    name: name || ('新分组 ' + (state.lib.length + 1)),
+    color: GROUP_COLORS[state.lib.length % GROUP_COLORS.length],
+    collapsed: false,
+    items: [],
+  };
+  state.lib.push(g);
+  persist.lib();
+  scheduleSync('add-group');
+  return g;
+}
+
+function addItem(gid, text) {
+  const g = findGroup(gid);
+  if (!g || !text || !text.trim()) return null;
+  const it = { id: uid(), text: normalizePrompt(text), usage: 0, lastUsed: 0, tags: [] };
+  g.items.unshift(it);
+  persist.lib();
+  scheduleSync('add-item');
+  return it;
+}
+
+function deleteGroup(gid) {
+  const i = state.lib.findIndex(g => g.id === gid);
+  if (i < 0) return null;
+  const [g] = state.lib.splice(i, 1);
+  persist.lib();
+  scheduleSync('del-group');
+  return g;
+}
+
+/* ---------------- 语法高亮：让 {权重} 和 , 分隔符更醒目 ---------------- */
+function renderPromptHTML(text) {
+  return esc(text)
+    .replace(/\(([^()]{1,80})\)/g, '<span class="tk-weight">($1)</span>')
+    .replace(/\{([^{}]{1,80})\}/g, '<span class="tk-brace">{$1}</span>')
+    .replace(/\[([^\[\]]{1,80})\]/g, '<span class="tk-bracket">[$1]</span>');
+}
+
+/* ============================================================
+   核心：追加到对话框（不替换）
+   ============================================================ */
+
+/* 判断是否需要补分隔符 */
+function needsJoiner(before, after) {
+  if (!before) return false;
+  if (!after) return false;
+  const b = before.replace(/\s+$/, '');
+  const a = after.replace(/^\s+/, '');
+  if (!b || !a) return false;
+  // 末尾已有分隔符
+  if (/[,，、;；:：\n]$/.test(b)) return false;
+  // 开头已有分隔符
+  if (/^[,，、;；]/.test(a)) return false;
+  // 都是英文/数字，若末尾已有空格则不再补
+  return true;
+}
+
+function pushUndo() {
+  state.undoStack.push({
+    text: els.promptBox.value,
+    selStart: els.promptBox.selectionStart,
+    selEnd: els.promptBox.selectionEnd,
+    chips: state.ui.chips.slice(),
+  });
+  if (state.undoStack.length > 60) state.undoStack.shift();
+}
+
+/**
+ * 把一段提示词插入到文本框的光标/选区位置。
+ * @param {string} rawText
+ * @param {object} opts { silent, label }
+ * @returns {boolean} 是否插入成功
+ */
+function insertPrompt(rawText, opts = {}) {
+  const text = normalizePrompt(rawText);
+  if (!text) return false;
+
+  const ta = els.promptBox;
+  const joiner = state.cfg.appendJoin ? ', ' : ' ';
+
+  let value = ta.value;
+  let start = ta.selectionStart != null ? ta.selectionStart : value.length;
+  let end   = ta.selectionEnd   != null ? ta.selectionEnd   : value.length;
+
+  // 去重：整段已存在时提示并跳过
+  if (state.cfg.dedupe) {
+    const flat = value.toLowerCase();
+    const needle = text.toLowerCase();
+    if (needle && flat.includes(needle)) {
+      if (!opts.silent) toast('这段提示词已经在对话框里了', 'warn');
+      return false;
+    }
+  }
+
+  pushUndo();
+
+  const before = value.slice(0, start);
+  const after  = value.slice(end);
+
+  let insert = text;
+  let pre = '', post = '';
+
+  if (state.cfg.appendJoin) {
+    if (needsJoiner(before, insert)) pre = joiner;
+    if (needsJoiner(insert, after))  post = joiner;
+  } else {
+    // 关闭自动分隔符时：若光标前后紧贴非空白字符，补一个空格
+    if (before && !/[\s,，、]$/.test(before)) pre = ' ';
+    if (after && !/^[\s,，、]/.test(after))  post = ' ';
+  }
+
+  ta.value = before + pre + insert + post + after;
+  const caret = (before + pre + insert + post).length;
+  try { ta.setSelectionRange(caret, caret); } catch (e) {}
+
+  // 记录 chip
+  const chip = { id: uid(), text: insert };
+  state.ui.chips.push(chip);
+  if (state.ui.chips.length > 40) state.ui.chips.shift();
+
+  updatePromptMeta();
+  renderChips(chip.id);
+  saveDraft();
+
+  if (!opts.silent) {
+    const ta2 = els.promptBox;
+    try { ta2.focus({ preventScroll: true }); } catch (e) { try { ta2.focus(); } catch (e2) {} }
+    flashComposer();
+  }
+  return true;
+}
+
+function undoAppend() {
+  const prev = state.undoStack.pop();
+  if (!prev) { toast('没有可撤销的操作', 'warn'); return; }
+  els.promptBox.value = prev.text;
+  state.ui.chips = prev.chips;
+  try { els.promptBox.setSelectionRange(prev.selStart, prev.selEnd); } catch (e) {}
+  updatePromptMeta();
+  renderChips();
+  saveDraft();
+  toast('已撤销上次追加');
+}
+
+function flashComposer() {
+  const box = els.promptBox;
+  box.style.transition = 'box-shadow .18s, border-color .18s';
+  box.style.borderColor = 'var(--accent)';
+  box.style.boxShadow = '0 0 0 4px var(--accent-soft)';
+  setTimeout(() => {
+    box.style.borderColor = '';
+    box.style.boxShadow = '';
+  }, 420);
+}
+
+function saveDraft() {
+  state.cfg._draft = els.promptBox.value;
+  persist.cfg();
+}
+
+/* ---------------- 渲染：词库 ---------------- */
+const els = {};
+
+function getVisibleLib() {
+  const q = state.ui.search.trim().toLowerCase();
+  let groups = state.lib.map(g => {
+    if (!q) return { group: g, items: g.items.slice() };
+    const nameHit = g.name.toLowerCase().includes(q);
+    const items = nameHit ? g.items.slice()
+      : g.items.filter(i => i.text.toLowerCase().includes(q));
+    return { group: g, items };
+  });
+  if (q) groups = groups.filter(x => x.items.length > 0 || x.group.name.toLowerCase().includes(q));
+
+  const sort = state.ui.sort;
+  if (sort === 'manual') return groups;
+
+  groups = groups.map(x => {
+    const items = x.items.slice().sort((a, b) => {
+      if (sort === 'usage')  return (b.usage || 0) - (a.usage || 0);
+      if (sort === 'recent') return (b.lastUsed || 0) - (a.lastUsed || 0);
+      if (sort === 'alpha')  return a.text.localeCompare(b.text, 'zh');
+      return 0;
+    });
+    return { group: x.group, items };
+  });
+  return groups;
+}
+
+function renderLib() {
+  const wrap = els.libScroll;
+  const groups = getVisibleLib();
+  const total = state.lib.reduce((n, g) => n + g.items.length, 0);
+  els.libCount.textContent = total;
+
+  if (!state.lib.length) {
+    wrap.innerHTML = `<div class="lib-empty">
+      <span class="big">🗂</span>
+      词库还空着<br>点右上角 ＋ 建一个分组
+    </div>`;
+    return;
+  }
+  if (!groups.length) {
+    wrap.innerHTML = `<div class="lib-empty">
+      <span class="big">🔍</span>
+      没有匹配「${esc(state.ui.search)}」的提示词
+    </div>`;
+    return;
+  }
+
+  const html = groups.map(({ group: g, items }) => {
+    const collapsed = g.collapsed && !state.ui.search ? 'collapsed' : '';
+    const body = items.length
+      ? items.map(it => renderItemCard(g.id, it)).join('')
+      : `<div class="group-empty">这个分组还没有提示词</div>`;
+
+    return `<div class="group ${collapsed}" data-gid="${g.id}">
+      <div class="group-head" data-gid="${g.id}">
+        <span class="group-caret">▾</span>
+        <span class="group-dot" style="background:${esc(g.color)}"></span>
+        <span class="group-name" data-gid="${g.id}">${esc(g.name)}</span>
+        <span class="group-count">${items.length}</span>
+        <span class="group-spacer"></span>
+        <span class="group-actions">
+          <button class="icon-btn" data-act="add-item" data-gid="${g.id}" title="加提示词">＋</button>
+          <button class="icon-btn" data-act="rename-group" data-gid="${g.id}" title="重命名">✎</button>
+          <button class="icon-btn" data-act="color-group" data-gid="${g.id}" title="换颜色">◐</button>
+          <button class="icon-btn" data-act="del-group" data-gid="${g.id}" title="删除分组">🗑</button>
+        </span>
+      </div>
+      <div class="group-body" data-gid="${g.id}">${body}</div>
+    </div>`;
+  }).join('');
+
+  wrap.innerHTML = html;
+}
+
+function renderItemCard(gid, it) {
+  const picked = state.ui.picked.includes(it.id) ? 'picked' : '';
+  const used = it.usage ? `<span class="pcard-used" title="使用 ${it.usage} 次">★${it.usage}</span>` : '';
+  return `<div class="pcard ${picked}" draggable="true" data-gid="${gid}" data-iid="${it.id}">
+    <div class="pcard-main">
+      <div class="pcard-text">${esc(it.text)}</div>
+      <div class="pcard-meta">
+        <span>${it.text.length} 字</span>
+        ${used}
+      </div>
+    </div>
+    <div class="pcard-actions">
+      <button class="icon-btn" data-act="edit-item" data-gid="${gid}" data-iid="${it.id}" title="编辑">✎</button>
+      <button class="icon-btn" data-act="copy-item" data-gid="${gid}" data-iid="${it.id}" title="拷贝">⧉</button>
+      <button class="icon-btn" data-act="del-item" data-gid="${gid}" data-iid="${it.id}" title="删除">🗑</button>
+    </div>
+  </div>`;
+}
+
+/* ---------------- 渲染：对话框 chips ---------------- */
+function renderChips(flashId) {
+  const row = els.chipsRow;
+  const chips = state.ui.chips;
+  if (!chips.length) {
+    row.innerHTML = '';
+    els.comboInfo.textContent = '';
+    return;
+  }
+  row.innerHTML = chips.map(c => `<span class="chip ${c.id === flashId ? 'flash' : ''}" data-cid="${c.id}" title="${esc(c.text)}">
+    <span class="chip-txt">${esc(c.text)}</span>
+    <button class="chip-x" data-cid="${c.id}" title="移除这段">✕</button>
+  </span>`).join('');
+  els.comboInfo.textContent = `已拼接 ${chips.length} 段`;
+  if (flashId) {
+    const n = row.querySelector(`[data-cid="${flashId}"]`);
+    if (n) setTimeout(() => n.classList.remove('flash'), 600);
+  }
+  row.scrollLeft = row.scrollWidth;
+}
+
+/* 移除某段 chip 时，同步从文本框里删掉对应的那段文本 */
+function removeChipByText(cid) {
+  const c = state.ui.chips.find(x => x.id === cid);
+  if (!c) return;
+  pushUndo();
+  const val = els.promptBox.value;
+  const idx = val.toLowerCase().indexOf(c.text.toLowerCase());
+  if (idx >= 0) {
+    let next = val.slice(0, idx) + val.slice(idx + c.text.length);
+    next = normalizePrompt(next);
+    els.promptBox.value = next;
+  }
+  state.ui.chips = state.ui.chips.filter(x => x.id !== cid);
+  updatePromptMeta();
+  renderChips();
+  saveDraft();
+}
+
+/* ---------------- 渲染：结果 & 历史 ---------------- */
+function renderResults() {
+  const items = state.ui.results || [];
+  const grid = els.resultGrid;
+  const empty = $('#emptyState');
+
+  if (!items.length && !state.busy) {
+    empty.classList.remove('hidden');
+    grid.innerHTML = '';
+    return;
+  }
+  empty.classList.add('hidden');
+
+  grid.innerHTML = items.map(r => {
+    if (r.kind === 'loading') {
+      return `<div class="card-skeleton" id="${r.id}">绘制中…<br><small style="opacity:.7">正在等接口返回</small></div>`;
+    }
+    if (r.kind === 'error') {
+      return `<div class="card-error" id="${r.id}">
+        <b>生成失败</b>
+        <div class="msg">${esc(r.message)}</div>
+      </div>`;
+    }
+    return `<div class="card-img" id="${r.id}">
+      <img src="${esc(r.src)}" alt="生成结果" loading="lazy" data-act="zoom" data-id="${r.id}">
+      <div class="card-img-bar">
+        <span class="txt" title="${esc(r.prompt)}">${esc(r.prompt)}</span>
+        <button class="icon-btn" data-act="copy-result-prompt" data-id="${r.id}" title="复制提示词">⧉</button>
+        <a class="icon-btn" href="${esc(r.src)}" download="painting-${r.id}.png" title="下载">⤓</a>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderHistory() {
+  const h = state.history;
+  els.histCount.textContent = h.length;
+  const grid = els.historyGrid;
+  const empty = $('#historyEmpty');
+
+  if (!h.length) {
+    empty.classList.remove('hidden');
+    grid.innerHTML = '';
+    return;
+  }
+  empty.classList.add('hidden');
+  grid.innerHTML = h.slice(0, 120).map(r => `<div class="hist-card" data-hid="${r.id}" data-act="open-hist">
+    <img src="${esc(r.src)}" alt="" loading="lazy">
+    <div class="hist-card-meta">
+      <div class="txt" title="${esc(r.prompt)}">${esc(r.prompt)}</div>
+      <div>${fmtTime(r.time)}</div>
+    </div>
+  </div>`).join('');
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* ---------------- 提示词用量统计 ---------------- */
+function bumpUsage(text) {
+  const t = normalizePrompt(text).toLowerCase();
+  let hit = false;
+  state.lib.forEach(g => g.items.forEach(it => {
+    if (!hit && it.text.toLowerCase() === t) {
+      it.usage = (it.usage || 0) + 1;
+      it.lastUsed = Date.now();
+      hit = true;
+    }
+  }));
+  if (hit) { persist.lib(); if (state.ui.sort !== 'manual') renderLib(); }
+}
+
+/* ============================================================
+   画图 API
+   ============================================================ */
+function buildEndpoint() {
+  let base = (state.cfg.baseUrl || '').trim().replace(/\/+$/, '');
+  if (!base) throw new Error('请先填写接口地址 Base URL');
+  if (/\/images\/generations$/.test(base)) return base;
+  if (/\/v\d+$/.test(base)) return base + '/images/generations';
+  // 未带版本号时补 /v1
+  if (!/\/v\d+\//.test(base)) return base + '/v1/images/generations';
+  return base + '/images/generations';
+}
+
+function buildPayload(prompt) {
+  const c = state.cfg;
+  const body = {
+    model: c.model || 'gpt-image-1',
+    prompt,
+    n: clamp(Number(c.count) || 1, 1, 8),
+  };
+
+  const sizeField = (c.mapSize || 'size').trim() || 'size';
+  if (c.sizeString) {
+    body[sizeField] = `${c.width}x${c.height}`;
+  } else if (sizeField === 'size') {
+    body.size = `${c.width}x${c.height}`;
+  } else if (sizeField === 'width' || sizeField === 'height') {
+    body.size = `${c.width}x${c.height}`;
+  } else {
+    body[sizeField] = `${c.width}x${c.height}`;
+  }
+  // 同时给出宽高数值，兼容 width/height 型接口
+  if (c.mapSize === 'width' || c.mapSize === 'height') {
+    body.width = Number(c.width);
+    body.height = Number(c.height);
+  }
+
+  if (c.quality) body.quality = c.quality;
+  if (c.style && c.style !== 'vivid') body.style = c.style;
+  if (c.style === 'vivid') body.style = 'vivid';
+  if (c.responseFormat) body.response_format = c.responseFormat;
+
+  if (c.useNegative && c.negative.trim()) {
+    const nf = (c.mapNegative || 'negative_prompt').trim() || 'negative_prompt';
+    body[nf] = normalizePrompt(c.negative);
+  }
+
+  if (c.extraJson && c.extraJson.trim()) {
+    try {
+      const extra = JSON.parse(c.extraJson);
+      if (extra && typeof extra === 'object' && !Array.isArray(extra)) {
+        Object.assign(body, extra);
+      }
+    } catch (e) {
+      throw new Error('额外 JSON 参数格式错误：' + e.message);
+    }
+  }
+  return body;
+}
+
+function extractImages(data) {
+  const list = [];
+  if (!data) return list;
+  const arr = data.data || data.images || data.output || (Array.isArray(data) ? data : []);
+  if (!Array.isArray(arr)) return list;
+
+  arr.forEach(d => {
+    if (!d) return;
+    // OpenAI 风格
+    if (d.b64_json) { list.push({ src: 'data:image/png;base64,' + d.b64_json }); return; }
+    if (d.url)      { list.push({ src: d.url }); return; }
+    if (d.image_url) { list.push({ src: d.image_url }); return; }
+    if (d.base64)   { list.push({ src: 'data:image/png;base64,' + d.base64 }); return; }
+    // 有些中转直接给字符串
+    if (typeof d === 'string') {
+      list.push({ src: /^https?:|^data:/.test(d) ? d : 'data:image/png;base64,' + d });
+    }
+  });
+  return list;
+}
+
+/* 发起一次生图请求，返回 { ok, status, data, text } */
+async function postImages(endpoint, headers, payload) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180000); // 3 分钟上限
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch (e) { /* 可能不是 JSON */ }
+    return { ok: res.ok, status: res.status, data, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* 从报错信息里推断哪些参数不被支持，需要摘掉重试。
+   覆盖常见别名：aspect_ratio / image_size / dimensions 等 → 尺寸类 */
+function pickParamsToStrip(status, errMsg, payload) {
+  if (status !== 400 && status !== 422) return [];
+  const msg = String(errMsg || '').toLowerCase();
+  if (!msg) return [];
+  const strip = new Set();
+
+  // 参数别名表：报错出现左边这些词 → 摘掉右边 payload 里的字段
+  const aliasMap = [
+    [/aspect[_ -]?ratio|宽高比/, ['size', 'width', 'height']],
+    [/image[_ -]?size|dimensions|resolution|分辨率/, ['size', 'width', 'height']],
+    [/quality|质量/, ['quality']],
+    [/style|风格/, ['style']],
+    [/response[_ -]?format/, ['response_format']],
+    [/\bn\b(?!otify)|数量|images?\s*count|sample/, ['n']],
+    [/negative|负向/, Object.keys(payload).filter(k => /negative/i.test(k))],
+  ];
+  aliasMap.forEach(([re, keys]) => {
+    if (re.test(msg)) keys.forEach(k => { if (k in payload) strip.add(k); });
+  });
+
+  // 报错里直接点名了 payload 中的字段名 → 也摘掉
+  Object.keys(payload).forEach(k => {
+    if (k !== 'prompt' && k !== 'model' && new RegExp('\\b' + k.toLowerCase() + '\\b').test(msg)) {
+      strip.add(k);
+    }
+  });
+  return [...strip];
+}
+
+async function generate() {
+  if (state.busy) return;
+
+  const raw = els.promptBox.value.trim();
+  if (!raw) { toast('先组合一段提示词吧', 'warn'); els.promptBox.focus(); return; }
+
+  const prompt = normalizePrompt(raw);
+  let endpoint, payload;
+  try {
+    endpoint = buildEndpoint();
+    payload = buildPayload(prompt);
+  } catch (e) {
+    toast(e.message, 'err', 3200); return;
+  }
+
+  if (state.cfg.debug) {
+    els.debugPre.classList.remove('hidden');
+    els.debugPre.textContent = `POST ${endpoint}\n\n` + JSON.stringify(payload, null, 2);
+  }
+
+  const n = clamp(Number(payload.n) || 1, 1, 8);  state.busy = true;
+  setGenerating(true);
+  state.ui.results = [];
+  const holders = [];
+  for (let i = 0; i < n; i++) {
+    const id = uid();
+    holders.push(id);
+    state.ui.results.push({ id, kind: 'loading' });
+  }
+  renderResults();
+  state.ui.results = [];
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (state.cfg.apiKey.trim()) headers['Authorization'] = 'Bearer ' + state.cfg.apiKey.trim();
+
+  try {
+    let result = await postImages(endpoint, headers, payload);
+
+    // 智能降级：400/422 且报错点名了参数 → 摘掉后重试一次
+    if (!result.ok) {
+      const firstMsg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) || result.text || '';
+      const stripKeys = pickParamsToStrip(result.status, firstMsg, payload);
+      if (stripKeys.length) {
+        const retryPayload = Object.assign({}, payload);
+        stripKeys.forEach(k => delete retryPayload[k]);
+        if (state.cfg.debug) {
+          els.debugPre.textContent += `\n\n── 参数被拒（${stripKeys.join(', ')}），降级重试 ──\n` + JSON.stringify(retryPayload, null, 2);
+        }
+        toast(`接口不认参数 ${stripKeys.join('/')}，已自动去掉重试`, 'warn', 3000);
+        result = await postImages(endpoint, headers, retryPayload);
+      }
+    }
+
+    if (!result.ok) {
+      const msg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) ||
+                  result.text.slice(0, 400) || ('HTTP ' + result.status);
+      throw new Error(`HTTP ${result.status} · ${msg}`);
+    }
+
+    const imgs = extractImages(result.data);
+    if (!imgs.length) {
+      const hint = result.data ? JSON.stringify(result.data).slice(0, 300) : result.text.slice(0, 300);
+      throw new Error('接口返回里没有识别到图片数据：' + hint);
+    }
+
+    state.ui.results = imgs.map(im => ({ id: uid(), kind: 'img', src: im.src, prompt, time: Date.now() }));
+
+    // 归档历史（最多保留 200 条）
+    imgs.forEach(im => {
+      state.history.unshift({ id: uid(), kind: 'img', src: im.src, prompt, time: Date.now() });
+    });
+    if (state.history.length > 200) state.history.length = 200;
+    persist.hist();
+    renderHistory();
+    renderResults();
+    bumpUsage(raw);
+    toast(`绘制完成 · ${state.ui.results.length} 张`, 'ok');
+  } catch (e) {
+    let msg = e.message || String(e);
+    if (e.name === 'AbortError') msg = '请求超时（超过 3 分钟未返回）';
+    else if (/Failed to fetch|NetworkError/i.test(msg)) {
+      msg = '网络请求失败：可能是接口地址写错、被浏览器 CORS 拦截，或该站点不允许网页直连。' +
+            '（浏览器控制台会有更详细的原因）';
+    }
+    state.ui.results = holders.map(h => ({ id: h, kind: 'error', message: msg }));
+    renderResults();
+    toast('生成失败，看看画布上的原因', 'err', 3600);
+  } finally {
+    state.busy = false;
+    setGenerating(false);
+  }
+}
+
+function setGenerating(on) {
+  const btn = els.btnGenerate;
+  btn.disabled = on;
+  btn.querySelector('.gen-label').textContent = on ? '绘制中…' : '开始绘制';
+  const sp = btn.querySelector('.gen-spinner');
+  if (sp) sp.hidden = !on;
+}
+
+/* ---------------- 模型列表拉取 ---------------- */
+let _modelCache = { baseUrl: '', models: [] };
+
+function renderModelPicker(filter) {
+  const list = els.modelList;
+  const models = _modelCache.models || [];
+  const q = (filter || '').trim().toLowerCase();
+  const shown = q ? models.filter(m => m.toLowerCase().includes(q)) : models;
+  els.modelCount.textContent = models.length ? `${shown.length}/${models.length}` : '';
+  if (!models.length) {
+    list.innerHTML = `<div class="model-empty">还没有拉取到模型</div>`;
+    return;
+  }
+  if (!shown.length) {
+    list.innerHTML = `<div class="model-empty">没有匹配的模型</div>`;
+    return;
+  }
+  const cur = state.cfg.model;
+  list.innerHTML = shown.map(m => `<div class="model-opt ${m === cur ? 'active' : ''}" data-model="${esc(m)}">
+    <span>${esc(m)}</span>${m === cur ? '<span class="cur">当前</span>' : ''}
+  </div>`).join('');
+}
+
+async function fetchModels() {
+  const btn = $('#btnFetchModels');
+  const out = els.apiTestResult;
+  let base = (state.cfg.baseUrl || '').trim().replace(/\/+$/, '');
+  if (!base) { toast('先填接口地址 Base URL', 'warn'); return; }
+  if (!/\/v\d+$/.test(base) && !/\/models$/.test(base)) base += '/v1';
+  const url = /\/models$/.test(base) ? base : base + '/models';
+
+  btn.disabled = true;
+  btn.textContent = '拉取中…';
+  if (out) { out.className = 'test-result busy'; out.textContent = '正在拉取模型列表…'; }
+
+  try {
+    const headers = {};
+    if (state.cfg.apiKey.trim()) headers['Authorization'] = 'Bearer ' + state.cfg.apiKey.trim();
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status} · ${(await res.text()).slice(0, 160)}`);
+
+    const d = await res.json();
+    let models = [];
+    if (Array.isArray(d.data)) {
+      models = d.data.map(m => m.id || m.name || m.model || m).filter(x => typeof x === 'string');
+    } else if (Array.isArray(d.models)) {
+      // Gemini 风格 { models: [{name: "models/gemini-..."}] }
+      models = d.models.map(m => String(m.name || m.id || '').replace(/^models\//, '')).filter(Boolean);
+    } else if (Array.isArray(d)) {
+      models = d.map(m => typeof m === 'string' ? m : (m.id || m.name || '')).filter(Boolean);
+    }
+    models = [...new Set(models)].sort((a, b) => a.localeCompare(b));
+    if (!models.length) throw new Error('接口返回中没有模型列表');
+
+    _modelCache = { baseUrl: state.cfg.baseUrl, models };
+    renderModelPicker('');
+    els.modelPicker.classList.remove('hidden');
+    els.modelFilter.value = '';
+    if (out) { out.className = 'test-result ok'; out.textContent = `✓ 拉取到 ${models.length} 个模型，点击列表即可选用`; }
+  } catch (e) {
+    if (out) {
+      out.className = 'test-result err';
+      out.textContent = '✕ 拉取失败：' + (e.message || e) + '（有些中转不开放 /models，可手动填模型名）';
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '获取模型';
+  }
+}
+
+/* 轻量连通性测试：用 GET /models 探活 */
+async function testApi() {
+  const out = els.apiTestResult;
+  out.className = 'test-result busy';
+  out.textContent = '测试中…';
+  try {
+    let base = (state.cfg.baseUrl || '').trim().replace(/\/+$/, '');
+    if (!base) throw new Error('Base URL 为空');
+    let url = /\/v\d+$/.test(base) ? base + '/models' : base + '/v1/models';
+    const headers = {};
+    if (state.cfg.apiKey.trim()) headers['Authorization'] = 'Bearer ' + state.cfg.apiKey.trim();
+
+    const res = await fetch(url, { headers });
+    if (res.ok) {
+      let n = '';
+      try {
+        const d = await res.json();
+        if (Array.isArray(d.data)) n = `，可见 ${d.data.length} 个模型`;
+      } catch (e) {}
+      out.className = 'test-result ok';
+      out.textContent = `✓ 接口可达${n}`;
+    } else {
+      out.className = 'test-result err';
+      out.textContent = `✕ HTTP ${res.status}：${(await res.text()).slice(0, 200)}`;
+    }
+  } catch (e) {
+    out.className = 'test-result err';
+    out.textContent = '✕ ' + (e.message || e) + '（若为浏览器跨域拦截属正常现象，直接生成试试）';
+  }
+}
+
+/* ============================================================
+   GitHub 云同步
+   ============================================================ */
+function ghReady(forWrite) {
+  const g = state.cfg.gh;
+  if (!g.owner || !g.repo) return false;
+  if (forWrite && !g.token) return false;
+  return true;
+}
+
+function ghApi(path) {
+  return `https://api.github.com/repos/${encodeURIComponent(state.cfg.gh.owner)}/${encodeURIComponent(state.cfg.gh.repo)}${path}`;
+}
+
+function ghHeaders() {
+  const h = { 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' };
+  if (state.cfg.gh.token) h['Authorization'] = 'Bearer ' + state.cfg.gh.token;
+  return h;
+}
+
+function libPayload() {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    app: 'prompt-painter',
+    groups: state.lib,
+  };
+}
+
+function setSync(stateName, text) {
+  const pill = els.syncPill;
+  pill.dataset.state = stateName;
+  els.syncText.textContent = text;
+}
+
+async function ghGetFile() {
+  const g = state.cfg.gh;
+  const url = ghApi(`/contents/${encodeURIComponent(g.path || 'prompts.json')}` +
+                    `?ref=${encodeURIComponent(g.branch || 'main')}&t=${Date.now()}`);
+  const res = await fetch(url, { headers: ghHeaders() });
+  if (res.status === 404) return { json: null, sha: null };
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`读取云端失败 HTTP ${res.status}：${t.slice(0, 200)}`);
+  }
+  const d = await res.json();
+  let content = '';
+  if (d.content) {
+    try { content = decodeURIComponent(escape(atob(d.content.replace(/\n/g, '')))); }
+    catch (e) { content = atob(d.content.replace(/\n/g, '')); }
+  } else if (d.download_url) {
+    const r2 = await fetch(d.download_url + '?t=' + Date.now());
+    content = await r2.text();
+  }
+  let json = null;
+  try { json = JSON.parse(content); } catch (e) { throw new Error('云端文件不是合法 JSON'); }
+  return { json, sha: d.sha };
+}
+
+async function ghPull(silent) {
+  if (!ghReady(false)) { if (!silent) toast('请先填仓库 owner 与 repo', 'warn'); return false; }
+  setSync('busy', '正在拉取云端…');
+  try {
+    const { json } = await ghGetFile();
+    if (!json || !Array.isArray(json.groups)) {
+      setSync('on', '云端暂无数据');
+      if (!silent) toast('云端还没有词库文件', 'warn');
+      return false;
+    }
+    // 合并：按分组名去重，提示词按文本去重
+    const merged = mergeLibraries(state.lib, json.groups);
+    state.lib = merged.lib;
+    persist.lib();
+    renderLib();
+    state.cfg.gh.lastSync = Date.now();
+    persist.cfg();
+    setSync('on', `已同步 · ${fmtTime(Date.now())}`);
+    if (!silent) toast(`云端同步完成 · 新增 ${merged.added} 条`, 'ok');
+    return true;
+  } catch (e) {
+    setSync('err', '同步失败');
+    if (!silent) toast('拉取失败：' + (e.message || e), 'err', 4000);
+    els.ghResult.className = 'test-result err';
+    els.ghResult.textContent = e.message || String(e);
+    return false;
+  }
+}
+
+function mergeLibraries(local, remote) {
+  let added = 0;
+  const byName = new Map(local.map(g => [g.name.trim().toLowerCase(), g]));
+  remote.forEach(rg => {
+    const key = String(rg.name || '').trim().toLowerCase();
+    let target = byName.get(key);
+    if (!target) {
+      target = { id: uid(), name: rg.name || '未命名分组', color: rg.color || GROUP_COLORS[0], collapsed: false, items: [] };
+      local.push(target);
+      byName.set(key, target);
+    }
+    const seen = new Set(target.items.map(i => i.text.trim().toLowerCase()));
+    (rg.items || []).forEach(ri => {
+      const t = String(ri.text || '').trim();
+      if (!t || seen.has(t.toLowerCase())) return;
+      seen.add(t.toLowerCase());
+      target.items.push({
+        id: uid(), text: t,
+        usage: ri.usage || 0, lastUsed: ri.lastUsed || 0,
+        tags: Array.isArray(ri.tags) ? ri.tags : [],
+      });
+      added++;
+    });
+  });
+  return { lib: local, added };
+}
+
+async function ghPush(silent) {
+  if (!ghReady(true)) { if (!silent) toast('云同步需要仓库信息 + Token', 'warn'); return false; }
+  setSync('busy', '正在上传…');
+  try {
+    let sha = null;
+    try {
+      const cur = await ghGetFile();
+      sha = cur.sha;
+    } catch (e) { /* 文件不存在或读失败，当作新建 */ }
+
+    const body = {
+      message: `chore(prompt-painter): 更新提示词库 · ${new Date().toLocaleString('zh-CN')}`,
+      content: b64EncodeUnicode(JSON.stringify(libPayload(), null, 2)),
+      branch: state.cfg.gh.branch || 'main',
+    };
+    if (sha) body.sha = sha;
+
+    const res = await fetch(ghApi(`/contents/${encodeURIComponent(state.cfg.gh.path || 'prompts.json')}`), {
+      method: 'PUT',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, ghHeaders()),
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const t = await res.text();
+      let hint = `HTTP ${res.status}`;
+      if (res.status === 401) hint += ' · Token 无效或已过期';
+      else if (res.status === 403) hint += ' · 权限不足（需要 Contents: Read and write）';
+      else if (res.status === 404) hint += ' · 仓库不存在，或 Token 无该仓库权限';
+      else if (res.status === 409) hint += ' · SHA 冲突，请先「从云端拉取」';
+      throw new Error(`${hint}：${t.slice(0, 220)}`);
+    }
+
+    state.cfg.gh.lastSync = Date.now();
+    persist.cfg();
+    setSync('on', `已上传 · ${fmtTime(Date.now())}`);
+    if (!silent) toast('已同步到 GitHub', 'ok');
+    els.ghResult.className = 'test-result ok';
+    els.ghResult.textContent = '✓ 词库已提交到 ' +
+      `${state.cfg.gh.owner}/${state.cfg.gh.repo}/${state.cfg.gh.branch}/${state.cfg.gh.path}`;
+    return true;
+  } catch (e) {
+    setSync('err', '上传失败');
+    if (!silent) toast('上传失败：' + (e.message || e), 'err', 4500);
+    els.ghResult.className = 'test-result err';
+    els.ghResult.textContent = e.message || String(e);
+    return false;
+  }
+}
+
+/* UTF-8 安全 base64（GitHub 要求） */
+function b64EncodeUnicode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  bytes.forEach(b => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
+function b64DecodeUnicode(b64) {
+  const bin = atob(b64.replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+/* 自动同步：变更后延迟上传，避免频繁提交 */
+const scheduleSync = (() => {
+  let t = null;
+  return (reason) => {
+    const g = state.cfg.gh;
+    if (!g.autoSync || !ghReady(true)) {
+      if (ghReady(false) && !g.autoSync) { /* 手动模式不自动传 */ }
+      return;
+    }
+    setSync('busy', '待上传…');
+    clearTimeout(t);
+    t = setTimeout(() => ghPush(true), 2500);
+  };
+})();
+
+/* ============================================================
+   导入 / 导出
+   ============================================================ */
+function exportJson() {
+  const blob = new Blob([JSON.stringify(libPayload(), null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  a.download = `prompt-painter-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  toast('已导出 JSON 备份', 'ok');
+}
+
+function importJson(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(String(reader.result));
+      const groups = Array.isArray(data) ? data : (data.groups || []);
+      if (!Array.isArray(groups) || !groups.length) throw new Error('文件里没有找到分组数据');
+      const r = mergeLibraries(state.lib, groups);
+      persist.lib();
+      renderLib();
+      scheduleSync('import');
+      toast(`导入完成 · 新增 ${r.added} 条提示词`, 'ok');
+    } catch (e) {
+      toast('导入失败：' + (e.message || e), 'err');
+    }
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+/* ============================================================
+   设置面板绑定
+   ============================================================ */
+const CFG_KEYS = [
+  ['cfgBaseUrl', 'baseUrl', 'text'],
+  ['cfgApiKey', 'apiKey', 'text'],
+  ['cfgModel', 'model', 'text'],
+  ['cfgWidth', 'width', 'num'],
+  ['cfgHeight', 'height', 'num'],
+  ['cfgQuality', 'quality', 'text'],
+  ['cfgStyle', 'style', 'text'],
+  ['cfgResponse', 'responseFormat', 'text'],
+  ['cfgNegative', 'negative', 'text'],
+  ['mapSize', 'mapSize', 'text'],
+  ['mapNegative', 'mapNegative', 'text'],
+  ['cfgExtraJson', 'extraJson', 'text'],
+];
+
+const CFG_BOOLS = [
+  ['chkSizeString', 'sizeString'],
+  ['chkUseNegative', 'useNegative'],
+  ['chkDebug', 'debug'],
+  ['chkAppendJoin', 'appendJoin'],
+  ['chkDedupe', 'dedupe'],
+];
+
+const GH_KEYS = [
+  ['ghOwner', 'owner'], ['ghRepo', 'repo'], ['ghBranch', 'branch'],
+  ['ghPath', 'path'], ['ghToken', 'token'],
+];
+const GH_BOOLS = [['chkAutoSync', 'autoSync'], ['chkSyncPrompt', 'publicRead']];
+
+function bindSettings() {
+  CFG_KEYS.forEach(([elId, key, kind]) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    const isPassword = el.type === 'password';
+    el.addEventListener('input', () => {
+      state.cfg[key] = kind === 'num' ? Number(el.value) : el.value;
+      if (isPassword) updateDangerNote();
+      persist.cfg();
+      markSizeActive();
+    });
+    el.addEventListener('change', () => {
+      state.cfg[key] = kind === 'num' ? Number(el.value) : el.value;
+      persist.cfg();
+      markSizeActive();
+    });
+  });
+
+  CFG_BOOLS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    el.addEventListener('change', () => { state.cfg[key] = el.checked; persist.cfg(); });
+  });
+
+  GH_KEYS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    el.addEventListener('input', () => {
+      state.cfg.gh[key] = el.value;
+      persist.cfg();
+      updateSyncPill();
+    });
+  });
+  GH_BOOLS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    el.addEventListener('change', () => { state.cfg.gh[key] = el.checked; persist.cfg(); updateSyncPill(); });
+  });
+
+  const cnt = $('#cfgCount');
+  cnt.addEventListener('input', () => {
+    state.cfg.count = Number(cnt.value);
+    $('#cfgCountOut').textContent = cnt.value + ' 张';
+    persist.cfg();
+  });
+
+  $('#cfgNegativePreset').addEventListener('change', e => {
+    const v = e.target.value;
+    if (!v) return;
+    $('#cfgNegative').value = v;
+    state.cfg.negative = v;
+    state.cfg.useNegative = true;
+    $('#chkUseNegative').checked = true;
+    persist.cfg();
+    e.target.value = '';
+  });
+
+  $$('.pw-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = $('#' + btn.dataset.target);
+      if (!input) return;
+      input.type = input.type === 'password' ? 'text' : 'password';
+      btn.textContent = input.type === 'password' ? '👁' : '🙈';
+    });
+  });
+}
+
+function settingsToUI() {
+  CFG_KEYS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (el) el.value = state.cfg[key] ?? '';
+  });
+  CFG_BOOLS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (el) el.checked = !!state.cfg[key];
+  });
+  GH_KEYS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (el) el.value = state.cfg.gh[key] ?? '';
+  });
+  GH_BOOLS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (el) el.checked = !!state.cfg.gh[key];
+  });
+  $('#cfgCount').value = state.cfg.count;
+  $('#cfgCountOut').textContent = state.cfg.count + ' 张';
+  updateSyncPill();
+  renderSizeGrid();
+  updateStoreStat();
+}
+
+function updateSyncPill() {
+  const g = state.cfg.gh;
+  if (!g.owner || !g.repo) { setSync('off', '未配置云同步'); return; }
+  if (g.lastSync) setSync('on', `已同步 · ${fmtTime(g.lastSync)}`);
+  else if (g.token || g.publicRead) setSync('off', '待首次同步');
+  else setSync('off', '缺少 Token');
+}
+
+/* Key 写入本机的安全提示 —— 只在有值时轻声提醒一次 */
+let _keyWarned = false;
+function updateDangerNote() {
+  if (_keyWarned) return;
+  const hasKey = !!(state.cfg.apiKey || '').trim();
+  if (hasKey) {
+    _keyWarned = true;
+    setSync('off', '未配置云同步'); // 保持同步胶囊语义不变
+    toast('API Key 已保存在本机浏览器，请勿在公共电脑上使用', 'warn', 3200);
+  }
+}
+
+function updateStoreStat() {
+  let bytes = 0;
+  [LS.lib, LS.cfg, LS.hist, LS.ui].forEach(k => {
+    const v = localStorage.getItem(k);
+    if (v) bytes += v.length;
+  });
+  const kb = (bytes / 1024).toFixed(1);
+  els.storeStat.textContent = `本地占用约 ${kb} KB · 生成历史 ${state.history.length} 条 · 提示词 ${state.lib.reduce((n, g) => n + g.items.length, 0)} 条`;
+}
+
+/* ---------------- 尺寸预设 ---------------- */
+function renderSizeGrid() {
+  const grid = els.sizeGrid;
+  grid.innerHTML = SIZE_PRESETS.map((p, i) =>
+    `<button class="size-chip" data-i="${i}"><b>${p.label}</b>${p.w}×${p.h}</button>`).join('');
+  markSizeActive();
+}
+function markSizeActive() {
+  $$('.size-chip').forEach((c, i) => {
+    const p = SIZE_PRESETS[i];
+    c.classList.toggle('active', p && Number(state.cfg.width) === p.w && Number(state.cfg.height) === p.h);
+  });
+}
+
+/* ============================================================
+   弹窗 / 灯箱
+   ============================================================ */
+function openModal(title, html) {
+  els.modalTitle.textContent = title;
+  els.modalBody.innerHTML = html;
+  els.modal.hidden = false;
+}
+function closeModal() { els.modal.hidden = true; }
+
+function openLightbox(src, prompt) {
+  els.lbImg.src = src;
+  els.lbPrompt.value = prompt || '';
+  els.lbDownload.href = src;
+  els.lightbox.hidden = false;
+}
+function closeLightbox() { els.lightbox.hidden = true; els.lbImg.src = ''; }
+
+const HELP_HTML = `
+  <h4>核心玩法：点一下 = 追加，不是替换</h4>
+  <p>左侧每一张卡片都是一段可复用的提示词。点击它，文字会<b>插入到光标所在位置</b>，
+  前后自动补齐逗号分隔。所以你可以像搭积木一样，把「画质增强 + 光影 + 画风」拼成一句话。</p>
+  <h4>三步出图</h4>
+  <ol>
+    <li>先在对话框里写好主体描述，比如 <code>一只戴墨镜的橘猫</code>。</li>
+    <li>把光标放到想插的位置，依次点亮 <code>画质增强</code>、<code>光影氛围</code> 里的词。</li>
+    <li>右侧调好尺寸与模型，按 <b>Ctrl + Enter</b> 或点「开始绘制」。</li>
+  </ol>
+  <h4>几个顺手的小设计</h4>
+  <ul>
+    <li><b>拖拽排序</b>：卡片可以在分组内拖动调整顺序（「手动排序」模式下生效）。</li>
+    <li><b>去重</b>：开启后重复的词不会再加进去；关掉就能故意叠权重。</li>
+    <li><b>撤销</b>：底部「撤销上次追加」可以回退，连按多次逐步回退。</li>
+    <li><b>权重写法</b>：<code>(关键词:1.3)</code> 提权、<code>[关键词]</code> 降权，按你的接口习惯来。</li>
+    <li><b>右键/悬停</b>：卡片悬停出现 ✎ 编辑、⧉ 拷贝、🗑 删除。</li>
+  </ul>
+  <h4>云同步是怎么回事</h4>
+  <p>网站把你的词库存成 GitHub 仓库里的一个 JSON 文件。点保存 = 提交一次 commit。
+  换设备打开同一网址，拉取后就是你那一份词库。Token 只存在本机浏览器里。</p>
+`;
+
+const ABOUT_HTML = `
+  <div class="kv">
+    <b>应用</b><span>Prompt Painter · 提示词绘画工作台</span>
+    <b>形态</b><span>单页纯前端应用，无后端、无构建</span>
+    <b>绘图接口</b><span>OpenAI 兼容的 Images API</span>
+    <b>数据存放</b><span>浏览器 localStorage（+ 可选 GitHub 仓库）</span>
+  </div>
+  <p>你的 API Key、GitHub Token 全部只保存在这台设备的浏览器里，
+  请求直接从浏览器发往对应服务商，本站不经过任何第三方服务器。</p>
+`;
+
+/* ============================================================
+   事件绑定
+   ============================================================ */
+function bindEvents() {
+  /* --- 顶栏 --- */
+  $('#btnSettings').addEventListener('click', () => {
+    const p = els.panelParams;
+    if (window.innerWidth <= 1000) {
+      p.classList.add('open'); els.scrim.hidden = false;
+      p.querySelector('.params-scroll').scrollTop = 0;
+    } else {
+      p.querySelector('.params-scroll').scrollTo({ top: 0, behavior: 'smooth' });
+      $$('.acc', p).forEach(a => { if (a.querySelector('#apiTestResult') || a.dataset.force) a.open = true; });
+    }
+  });
+  $('#btnTheme').addEventListener('click', () => {
+    const next = state.ui.theme === 'dark' ? 'light' : 'dark';
+    applyTheme(next);
+    store.write(LS.theme, next);
+  });
+  $('#brandBtn').addEventListener('click', () => openModal('关于', ABOUT_HTML));
+  $('#btnToggleLib').addEventListener('click', () => { els.panelLib.classList.add('open'); els.scrim.hidden = false; });
+  $('#btnToggleParams').addEventListener('click', () => { els.panelParams.classList.add('open'); els.scrim.hidden = false; });
+  $('#btnCloseLib').addEventListener('click', () => closeDrawers());
+  $('#btnCloseParams').addEventListener('click', () => closeDrawers());
+  els.scrim.addEventListener('click', closeDrawers);
+
+  /* --- 词库工具栏 --- */
+  $('#btnNewGroup').addEventListener('click', () => {
+    const g = addGroup();
+    renderLib();
+    setTimeout(() => startRenameGroup(g.id), 30);
+  });
+  $('#btnHelpAppend').addEventListener('click', () => openModal('使用说明', HELP_HTML));
+  $('#btnClearSearch').addEventListener('click', () => {
+    els.libSearch.value = ''; state.ui.search = ''; els.btnClearSearch.hidden = true; renderLib();
+  });
+  els.libSearch.addEventListener('input', debounce(e => {
+    state.ui.search = e.target.value;
+    els.btnClearSearch.hidden = !e.target.value;
+    renderLib();
+  }, 160));
+  els.libSort.addEventListener('change', e => {
+    state.ui.sort = e.target.value; persist.ui(); renderLib();
+  });
+
+  /* --- 词库点击（事件委托）--- */
+  els.libScroll.addEventListener('click', e => {
+    const btn = e.target.closest('[data-act]');
+    if (btn) { handleLibAction(btn, e); return; }
+
+    const card = e.target.closest('.pcard');
+    if (card) { onPickItem(card.dataset.gid, card.dataset.iid); return; }
+
+    const head = e.target.closest('.group-head');
+    if (head && !e.target.closest('.group-name[contenteditable]')) {
+      toggleGroup(head.dataset.gid);
+    }
+  });
+
+  // 双击分组名重命名
+  els.libScroll.addEventListener('dblclick', e => {
+    const nameEl = e.target.closest('.group-name');
+    if (nameEl) startRenameGroup(nameEl.dataset.gid);
+  });
+
+  /* --- 拖拽卡片 --- */
+  let dragCtx = null;
+  els.libScroll.addEventListener('dragstart', e => {
+    const card = e.target.closest('.pcard');
+    if (!card) return;
+    dragCtx = { gid: card.dataset.gid, iid: card.dataset.iid };
+    card.classList.add('dragging');
+    try { e.dataTransfer.setData('text/plain', dragCtx.iid); } catch (er) {}
+    e.dataTransfer.effectAllowed = 'move';
+  });
+  els.libScroll.addEventListener('dragend', e => {
+    $$('.pcard.dragging').forEach(c => c.classList.remove('dragging'));
+    $$('.pcard.drop-before').forEach(c => c.classList.remove('drop-before'));
+    $$('.group.drop-target').forEach(c => c.classList.remove('drop-target'));
+    dragCtx = null;
+  });
+  els.libScroll.addEventListener('dragover', e => {
+    if (!dragCtx) return;
+    const over = e.target.closest('.group-body');
+    if (!over) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    $$('.group.drop-target').forEach(c => c.classList.remove('drop-target'));
+    $$('.pcard.drop-before').forEach(c => c.classList.remove('drop-before'));
+    const tgtGroup = over.closest('.group');
+    if (tgtGroup) tgtGroup.classList.add('drop-target');
+    const overCard = e.target.closest('.pcard');
+    if (overCard && overCard.dataset.iid !== dragCtx.iid) overCard.classList.add('drop-before');
+  });
+  els.libScroll.addEventListener('drop', e => {
+    if (!dragCtx) return;
+    e.preventDefault();
+    const bodyEl = e.target.closest('.group-body');
+    if (!bodyEl) return;
+    const toGid = bodyEl.dataset.gid;
+    const overCard = e.target.closest('.pcard');
+    moveItem(dragCtx.gid, dragCtx.iid, toGid, overCard ? overCard.dataset.iid : null);
+    dragCtx = null;
+  });
+
+  /* --- 输入台 --- */
+  els.promptBox.addEventListener('input', () => { updatePromptMeta(); saveDraft(); });
+  els.promptBox.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); generate(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && e.shiftKey) {
+      e.preventDefault(); undoAppend();
+    }
+  });
+  els.btnGenerate.addEventListener('click', generate);
+  $('#btnClearPrompt').addEventListener('click', () => {
+    if (!els.promptBox.value) return;
+    pushUndo();
+    els.promptBox.value = '';
+    state.ui.chips = [];
+    updatePromptMeta(); renderChips(); saveDraft();
+  });
+  $('#btnUndoAppend').addEventListener('click', undoAppend);
+
+  els.chipsRow.addEventListener('click', e => {
+    const x = e.target.closest('.chip-x');
+    if (x) { removeChipByText(x.dataset.cid); return; }
+    const chip = e.target.closest('.chip');
+    if (chip) {
+      const c = state.ui.chips.find(v => v.id === chip.dataset.cid);
+      if (c) {
+        const idx = els.promptBox.value.toLowerCase().indexOf(c.text.toLowerCase());
+        if (idx >= 0) {
+          els.promptBox.focus();
+          els.promptBox.setSelectionRange(idx, idx + c.text.length);
+        }
+      }
+    }
+  });
+
+  $('#chkAppendJoin').addEventListener('change', e => { state.cfg.appendJoin = e.target.checked; persist.cfg(); });
+  $('#chkDedupe').addEventListener('change', e => { state.cfg.dedupe = e.target.checked; persist.cfg(); });
+
+  /* --- 结果区 --- */
+  els.tabResult.addEventListener('click', e => {
+    const img = e.target.closest('img[data-act="zoom"]');
+    if (img) {
+      const r = (state.ui.results || []).find(x => x.id === img.closest('[id]')?.id);
+      openLightbox(img.src, r ? r.prompt : '');
+      return;
+    }
+    const cp = e.target.closest('[data-act="copy-result-prompt"]');
+    if (cp) {
+      const r = (state.ui.results || []).find(x => x.id === cp.dataset.id);
+      if (r) copyText(r.prompt).then(() => toast('提示词已复制', 'ok')).catch(() => toast('复制失败', 'err'));
+    }
+  });
+
+  els.historyGrid.addEventListener('click', e => {
+    const card = e.target.closest('[data-act="open-hist"]');
+    if (!card) return;
+    const h = state.history.find(x => x.id === card.dataset.hid);
+    if (h) openLightbox(h.src, h.prompt);
+  });
+
+  /* --- Tab --- */
+  $$('.tab').forEach(t => t.addEventListener('click', () => {
+    $$('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    const isResult = t.dataset.tab === 'result';
+    els.tabResult.classList.toggle('hidden', !isResult);
+    els.tabHistory.classList.toggle('hidden', isResult);
+  }));
+
+  /* --- 灯箱 --- */
+  $('#lbClose').addEventListener('click', closeLightbox);
+  els.lightbox.addEventListener('click', e => { if (e.target === els.lightbox) closeLightbox(); });
+  $('#lbCopyPrompt').addEventListener('click', () => {
+    copyText(els.lbPrompt.value).then(() => toast('已复制', 'ok')).catch(() => toast('复制失败', 'err'));
+  });
+
+  /* --- 弹窗 --- */
+  $('#modalClose').addEventListener('click', closeModal);
+  els.modal.addEventListener('click', e => { if (e.target === els.modal) closeModal(); });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      if (!els.lightbox.hidden) return closeLightbox();
+      if (!els.modal.hidden) return closeModal();
+      if (els.panelLib.classList.contains('open') || els.panelParams.classList.contains('open')) return closeDrawers();
+    }
+    // Ctrl+K 聚焦搜索
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (window.innerWidth <= 1000) { els.panelLib.classList.add('open'); els.scrim.hidden = false; }
+      els.libSearch.focus(); els.libSearch.select();
+    }
+    // Ctrl+Enter 全局触发生成
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && document.activeElement !== els.promptBox) {
+      e.preventDefault(); generate();
+    }
+  });
+
+  /* --- 视口变化：切回桌面宽时清理抽屉与遮罩，避免残留覆盖层 --- */
+  let _lastNarrow = window.innerWidth <= 1000;
+  window.addEventListener('resize', debounce(() => {
+    const narrow = window.innerWidth <= 1000;
+    if (_lastNarrow && !narrow) closeDrawers();     // 由窄变宽
+    if (!narrow) closeDrawers();                     // 桌面端永远不该有抽屉打开
+    _lastNarrow = narrow;
+  }, 120));
+
+  /* --- 接口测试 / 预设 / 模型列表 --- */
+  $('#btnTestApi').addEventListener('click', testApi);
+  $('#btnFetchModels').addEventListener('click', fetchModels);
+  els.modelFilter.addEventListener('input', debounce(e => renderModelPicker(e.target.value), 120));
+  els.modelList.addEventListener('click', e => {
+    const opt = e.target.closest('.model-opt');
+    if (!opt) return;
+    state.cfg.model = opt.dataset.model;
+    $('#cfgModel').value = opt.dataset.model;
+    persist.cfg();
+    renderModelPicker(els.modelFilter.value);
+    toast('已选用模型：' + opt.dataset.model, 'ok', 1600);
+  });
+  // 输入框聚焦且有缓存时，展开选择列表
+  $('#cfgModel').addEventListener('focus', () => {
+    if (_modelCache.models.length) els.modelPicker.classList.remove('hidden');
+  });
+  document.addEventListener('click', e => {
+    if (!els.modelPicker || els.modelPicker.classList.contains('hidden')) return;
+    if (e.target.closest('#modelPicker') || e.target.closest('#cfgModel') || e.target.closest('#btnFetchModels')) return;
+    els.modelPicker.classList.add('hidden');
+  });
+  $('#btnPreset').addEventListener('click', () => {
+    const html = `
+      <p>选一个常用服务商快速填好地址与模型（Key 需自己填）：</p>
+      <div class="field-row two" style="flex-wrap:wrap;gap:8px">
+        <button class="btn tiny ghost" data-preset="openai">OpenAI 官方</button>
+        <button class="btn tiny ghost" data-preset="silicon">硅基流动</button>
+        <button class="btn tiny ghost" data-preset="zhipu">智谱 AI</button>
+        <button class="btn tiny ghost" data-preset="dashscope">通义万相</button>
+        <button class="btn tiny ghost" data-preset="local">本地 / 自建</button>
+      </div>
+      <p style="font-size:11.5px;color:var(--text-3);margin-top:12px">
+        这些只是把常见地址填进去，具体可用模型请以服务商文档为准。</p>`;
+    openModal('快填预设', html);
+  });
+  els.modalBody.addEventListener('click', e => {
+    const b = e.target.closest('[data-preset]');
+    if (!b) return;
+    const presets = {
+      openai:    { baseUrl: 'https://api.openai.com/v1', model: 'gpt-image-1' },
+      silicon:   { baseUrl: 'https://api.siliconflow.cn/v1', model: 'Kwai-Kolors/Kolors' },
+      zhipu:     { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'cogview-4' },
+      dashscope: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'wanx2.1-t2i-turbo' },
+      local:     { baseUrl: 'http://127.0.0.1:3000/v1', model: 'flux-schnell' },
+    };
+    const p = presets[b.dataset.preset];
+    if (p) {
+      Object.assign(state.cfg, p);
+      persist.cfg();
+      settingsToUI();
+      toast('已填入 ' + p.baseUrl, 'ok');
+    }
+    closeModal();
+  });
+
+  /* --- 尺寸 --- */
+  els.sizeGrid.addEventListener('click', e => {
+    const chip = e.target.closest('.size-chip');
+    if (!chip) return;
+    const p = SIZE_PRESETS[Number(chip.dataset.i)];
+    if (!p) return;
+    state.cfg.width = p.w; state.cfg.height = p.h;
+    $('#cfgWidth').value = p.w; $('#cfgHeight').value = p.h;
+    persist.cfg();
+    markSizeActive();
+  });
+
+  /* --- 云同步 --- */
+  $('#btnGhPush').addEventListener('click', () => ghPush(false));
+  $('#btnGhPull').addEventListener('click', () => ghPull(false));
+
+  /* --- 数据 --- */
+  $('#btnExport').addEventListener('click', exportJson);
+  $('#btnExport2').addEventListener('click', exportJson);
+  $('#btnImport').addEventListener('click', () => $('#fileImport').click());
+  $('#btnImport2').addEventListener('click', () => $('#fileImport').click());
+  $('#fileImport').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) importJson(f);
+    e.target.value = '';
+  });
+  $('#btnResetLib').addEventListener('click', () => {
+    openModal('示例模板库', `
+      <p>内置了两套可直接用的词组模板，可以<b>合并</b>进你现有词库（重复的会自动跳过），
+      也可以整体替换。</p>
+      <div class="field" style="margin-top:14px">
+        <label>人像摄影模板（推荐）</label>
+        <small>主体 / 五官 / 妆造 / 光线 / 镜头 / 氛围 / 背景，共 8 组，点几下就能拼出完整人像提示词。</small>
+        <div class="field-row" style="margin-top:8px">
+          <button class="btn tiny primary" data-seed="portrait-merge">合并人像模板</button>
+          <button class="btn tiny ghost" data-seed="portrait-only">只保留人像模板</button>
+        </div>
+      </div>
+      <div class="field" style="margin-top:16px">
+        <label>通用词组模板</label>
+        <small>画质 / 产品电商 / 色彩 / 画风 / 排版，适合产品图与插画。</small>
+        <div class="field-row" style="margin-top:8px">
+          <button class="btn tiny ghost" data-seed="all-merge">合并全部模板</button>
+          <button class="btn tiny danger" data-seed="all-replace">清空并只保留模板</button>
+        </div>
+      </div>`);
+  });
+  els.modalBody.addEventListener('click', e => {
+    const b = e.target.closest('[data-seed]');
+    if (!b) return;
+    const mode = b.dataset.seed;
+    if (mode === 'all-replace') {
+      state.lib = seedLibrary();
+      persist.lib(); renderLib(); scheduleSync('seed-replace');
+      toast('已重置为内置模板词库', 'ok');
+    } else if (mode === 'portrait-only') {
+      state.lib = portraitLibrary();
+      persist.lib(); renderLib(); scheduleSync('seed-portrait');
+      toast('已载入人像模板', 'ok');
+    } else {
+      const src = mode === 'portrait-merge' ? portraitLibrary() : seedLibrary();
+      const r = mergeLibraries(state.lib, src);
+      persist.lib(); renderLib(); scheduleSync('seed-merge');
+      toast(`已合并 · 新增 ${r.added} 条`, 'ok');
+    }
+    closeModal();
+  });
+  $('#btnWipeGen').addEventListener('click', () => {
+    state.history = []; persist.hist(); renderHistory(); updateStoreStat();
+    toast('生成历史已清空', 'ok');
+  });
+  $('#btnWipeAll').addEventListener('click', () => {
+    openModal('重置全部数据', `
+      <p>将清除：词库、接口配置、生成历史、主题设置。<b>此操作不可撤销。</b></p>
+      <p style="color:var(--danger)">如果已经配置了云同步，建议先「上传到云端」备份，或先导出 JSON。</p>
+      <div class="field-row"><button class="btn tiny danger" data-wipe="1">确认清除全部</button></div>`);
+  });
+  els.modalBody.addEventListener('click', e => {
+    if (!e.target.closest('[data-wipe]')) return;
+    [LS.lib, LS.cfg, LS.hist, LS.ui].forEach(store.remove);
+    location.reload();
+  });
+}
+
+/* ---------------- 词库动作 ---------------- */
+function handleLibAction(btn) {
+  const act = btn.dataset.act;
+  const gid = btn.dataset.gid;
+  const iid = btn.dataset.iid;
+
+  switch (act) {
+    case 'add-item': {
+      openModal('新增提示词', `
+        <div class="field">
+          <label>提示词内容</label>
+          <textarea id="newItemText" rows="4" placeholder="例如：soft natural window light, gentle shadows"></textarea>
+        </div>
+        <div class="field-row">
+          <button class="btn tiny primary" data-newitem="${gid}">保存</button>
+        </div>`);
+      setTimeout(() => { const t = $('#newItemText'); if (t) t.focus(); }, 40);
+      break;
+    }
+    case 'rename-group':
+      startRenameGroup(gid);
+      break;
+    case 'color-group': {
+      const g = findGroup(gid);
+      if (!g) break;
+      const i = GROUP_COLORS.indexOf(g.color);
+      g.color = GROUP_COLORS[(i + 1) % GROUP_COLORS.length];
+      persist.lib(); renderLib(); scheduleSync('color');
+      break;
+    }
+    case 'del-group': {
+      const g = findGroup(gid);
+      if (!g) break;
+      openModal('删除分组', `
+        <p>确定删除分组 <b>${esc(g.name)}</b> 及其中的 ${g.items.length} 条提示词？</p>
+        <div class="field-row">
+          <button class="btn tiny danger" data-delgroup="${gid}">确认删除</button>
+        </div>`);
+      break;
+    }
+    case 'edit-item': {
+      const it = findItem(gid, iid);
+      if (!it) break;
+      openModal('编辑提示词', `
+        <div class="field">
+          <label>提示词内容</label>
+          <textarea id="editItemText" rows="5">${esc(it.text)}</textarea>
+        </div>
+        <div class="field-row">
+          <button class="btn tiny primary" data-saveitem="${gid}|${iid}">保存</button>
+        </div>`);
+      setTimeout(() => { const t = $('#editItemText'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 40);
+      break;
+    }
+    case 'copy-item': {
+      const it = findItem(gid, iid);
+      if (it) copyText(it.text).then(() => toast('已复制到剪贴板', 'ok')).catch(() => toast('复制失败', 'err'));
+      break;
+    }
+    case 'del-item': {
+      const g = findGroup(gid);
+      if (!g) break;
+      const i = g.items.findIndex(x => x.id === iid);
+      if (i < 0) break;
+      g.items.splice(i, 1);
+      persist.lib(); renderLib(); scheduleSync('del-item');
+      toast('已删除');
+      break;
+    }
+  }
+}
+
+/* 弹窗内的保存动作 */
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-close-only]')) { closeModal(); return; }
+
+  const ni = e.target.closest('[data-newitem]');
+  if (ni) {
+    const t = $('#newItemText');
+    if (t && t.value.trim()) {
+      addItem(ni.dataset.newitem, t.value);
+      renderLib();
+      toast('已保存', 'ok');
+    }
+    closeModal();
+    return;
+  }
+  const si = e.target.closest('[data-saveitem]');
+  if (si) {
+    const [gid, iid] = si.dataset.saveitem.split('|');
+    const it = findItem(gid, iid);
+    const t = $('#editItemText');
+    if (it && t) {
+      it.text = normalizePrompt(t.value);
+      persist.lib(); renderLib(); scheduleSync('edit-item');
+      toast('已更新', 'ok');
+    }
+    closeModal();
+    return;
+  }
+  const dg = e.target.closest('[data-delgroup]');
+  if (dg) {
+    deleteGroup(dg.dataset.delgroup);
+    renderLib();
+    closeModal();
+    toast('分组已删除');
+  }
+});
+
+/* 单个提示词点击 → 追加 */
+function onPickItem(gid, iid) {
+  const it = findItem(gid, iid);
+  if (!it) return;
+  insertPrompt(it.text, { label: it.text });
+  const card = els.libScroll.querySelector(`.pcard[data-iid="${iid}"]`);
+  if (card) {
+    card.classList.add('picked');
+    setTimeout(() => card.classList.remove('picked'), 420);
+  }
+}
+
+/* 拖拽移动 */
+function moveItem(fromGid, iid, toGid, beforeIid) {
+  const from = findGroup(fromGid);
+  const to   = findGroup(toGid);
+  if (!from || !to) return;
+  const idx = from.items.findIndex(x => x.id === iid);
+  if (idx < 0) return;
+  const [it] = from.items.splice(idx, 1);
+
+  if (!beforeIid) {
+    to.items.push(it);
+  } else {
+    const at = to.items.findIndex(x => x.id === beforeIid);
+    if (at < 0) to.items.push(it);
+    else to.items.splice(at, 0, it);
+  }
+  persist.lib();
+  renderLib();
+  scheduleSync('move');
+}
+
+function toggleGroup(gid) {
+  const g = findGroup(gid);
+  if (!g) return;
+  g.collapsed = !g.collapsed;
+  const node = els.libScroll.querySelector(`.group[data-gid="${gid}"]`);
+  if (node) node.classList.toggle('collapsed', g.collapsed);
+  persist.lib();
+}
+
+function startRenameGroup(gid) {
+  const el = els.libScroll.querySelector(`.group-name[data-gid="${gid}"]`);
+  const g = findGroup(gid);
+  if (!el || !g) return;
+  el.contentEditable = 'true';
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges(); sel.addRange(range);
+
+  const finish = (save) => {
+    el.contentEditable = 'false';
+    const name = (el.textContent || '').trim();
+    if (save && name) { g.name = name; persist.lib(); scheduleSync('rename'); }
+    renderLib();
+  };
+  el.addEventListener('blur', () => finish(true), { once: true });
+  el.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); }
+    if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+  });
+}
+
+/* ---------------- 主题 / 抽屉 ---------------- */
+function applyTheme(t) {
+  state.ui.theme = t;
+  document.documentElement.dataset.theme = t;
+  $('#btnTheme').textContent = t === 'dark' ? '☀' : '◐';
+}
+function closeDrawers() {
+  els.panelLib.classList.remove('open');
+  els.panelParams.classList.remove('open');
+  els.scrim.hidden = true;
+}
+
+/* ---------------- 元信息 ---------------- */
+function updatePromptMeta() {
+  const v = els.promptBox.value;
+  els.charCount.textContent = v.length + ' 字符';
+  els.tokenEst.textContent = '≈' + estimateTokens(v) + ' tokens';
+}
+
+/* ============================================================
+   启动
+   ============================================================ */
+function init() {
+  // 缓存 DOM
+  els.panelLib = $('#panelLib');
+  els.panelParams = $('#panelParams');
+  els.libScroll = $('#libScroll');
+  els.libCount = $('#libCount');
+  els.libSearch = $('#libSearch');
+  els.libSort = $('#libSort');
+  els.btnClearSearch = $('#btnClearSearch');
+  els.promptBox = $('#promptBox');
+  els.chipsRow = $('#chipsRow');
+  els.btnGenerate = $('#btnGenerate');
+  els.sizeGrid = $('#sizeGrid');
+  els.resultGrid = $('#resultGrid');
+  els.historyGrid = $('#historyGrid');
+  els.histCount = $('#histCount');
+  els.tabResult = $('#tabResult');
+  els.tabHistory = $('#tabHistory');
+  els.syncPill = $('#syncPill');
+  els.syncText = $('#syncText');
+  els.scrim = $('#scrim');
+  els.lightbox = $('#lightbox');
+  els.lbImg = $('#lbImg');
+  els.lbPrompt = $('#lbPrompt');
+  els.lbDownload = $('#lbDownload');
+  els.modal = $('#modal');
+  els.modalTitle = $('#modalTitle');
+  els.modalBody = $('#modalBody');
+  els.apiTestResult = $('#apiTestResult');
+  els.ghResult = $('#ghResult');
+  els.debugPre = $('#debugPre');
+  els.storeStat = $('#storeStat');
+  els.comboInfo = $('#comboInfo');
+  els.modelPicker = $('#modelPicker');
+  els.modelList = $('#modelList');
+  els.modelFilter = $('#modelFilter');
+  els.modelCount = $('#modelCount');
+  els.charCount = $('#charCount');
+  els.tokenEst = $('#tokenEst');
+
+  loadAll();
+  applyTheme(state.ui.theme);
+  els.libSort.value = state.ui.sort;
+
+  settingsToUI();
+  bindSettings();
+  bindEvents();
+
+  renderLib();
+  renderSizeGrid();
+  renderChips();
+  renderHistory();
+  renderResults();
+
+  // 恢复草稿
+  if (state.cfg._draft) els.promptBox.value = state.cfg._draft;
+  updatePromptMeta();
+
+  // 首次使用引导
+  if (!store.read('pp.seen.v1', false)) {
+    store.write('pp.seen.v1', true);
+    setTimeout(() => openModal('欢迎来到 Prompt Painter 🎨', HELP_HTML), 400);
+  }
+
+  // 示例库有更新时，提示老用户一键升级（不覆盖已有内容）
+  const seenSeed = store.read(LS.seedVer, 0);
+  if (seenSeed < SEED_VERSION) {
+    store.write(LS.seedVer, SEED_VERSION);
+    if (seenSeed > 0) {
+      // 老用户：给出合并入口，用户自己决定
+      setTimeout(() => {
+        openModal('示例模板库有更新 ✨', `
+          <p>这次内置了一套完整的 <b>人像摄影模板</b>（主体 / 五官 / 妆造 / 光线 / 镜头 / 氛围 / 背景），
+          以及产品电商、画风切换等词组。</p>
+          <p>合并进来即可，<b>不会影响你已有的分组和提示词</b>，重复的会自动跳过。</p>
+          <div class="field-row" style="margin-top:14px">
+            <button class="btn tiny primary" data-seed="portrait-merge">合并人像模板</button>
+            <button class="btn tiny ghost" data-seed="all-merge">合并全部模板</button>
+            <button class="btn tiny ghost" data-close-only="1">以后再说</button>
+          </div>`);
+      }, 500);
+    }
+  }
+
+  // 启动时尝试静默拉取云端
+  if (ghReady(false) && (state.cfg.gh.token || state.cfg.gh.publicRead)) {
+    setSync('busy', '正在同步…');
+    setTimeout(() => ghPull(true), 800);
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+
+})();

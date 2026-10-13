@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Prompt Painter · 提示词绘画工作台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ 顶栏 ============ -->
+<header class="topbar">
+  <div class="brand" id="brandBtn" title="点击查看关于">
+    <span class="brand-mark">PP</span>
+    <div class="brand-text">
+      <b>Prompt Painter</b>
+      <small>提示词绘画工作台</small>
+    </div>
+  </div>
+
+  <div class="topbar-center">
+    <div class="sync-pill" id="syncPill" data-state="off" title="云同步状态">
+      <span class="dot"></span>
+      <span id="syncText">未配置云同步</span>
+    </div>
+  </div>
+
+  <div class="topbar-actions">
+    <button class="btn ghost" id="btnTheme" title="切换主题">◐</button>
+    <button class="btn ghost" id="btnSettings" title="打开设置">⚙ 设置</button>
+    <button class="btn ghost mobile-only" id="btnToggleLib" title="提示词库">☰ 词库</button>
+    <button class="btn ghost mobile-only" id="btnToggleParams" title="参数">⚙</button>
+  </div>
+</header>
+
+<!-- ============ 主体三栏 ============ -->
+<main id="app">
+
+  <!-- ---------- 左：提示词库 ---------- -->
+  <aside class="panel panel-lib" id="panelLib">
+    <div class="panel-head">
+      <div class="panel-title">
+        <span>提示词库</span>
+        <span class="count-badge" id="libCount">0</span>
+      </div>
+      <div class="panel-head-actions">
+        <button class="icon-btn" id="btnNewGroup" title="新建分组">＋</button>
+        <button class="icon-btn" id="btnCloseLib" title="收起">✕</button>
+      </div>
+    </div>
+
+    <div class="lib-toolbar">
+      <div class="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input type="text" id="libSearch" placeholder="搜索提示词…" autocomplete="off">
+        <button class="clear-btn" id="btnClearSearch" hidden>✕</button>
+      </div>
+      <select id="libSort" class="mini-select" title="排序">
+        <option value="manual">手动排序</option>
+        <option value="usage">按使用次数</option>
+        <option value="recent">按最近使用</option>
+        <option value="alpha">按名称</option>
+      </select>
+    </div>
+
+    <div class="lib-hint">
+      <span>💡 点击卡片<b>追加</b>到对话框</span>
+      <button class="link-btn" id="btnHelpAppend">怎么用？</button>
+    </div>
+
+    <div class="lib-scroll" id="libScroll"></div>
+
+    <div class="panel-foot">
+      <button class="btn tiny ghost" id="btnExport">导出</button>
+      <button class="btn tiny ghost" id="btnImport">导入</button>
+      <button class="btn tiny ghost" id="btnResetLib" title="恢复内置示例">示例</button>
+      <input type="file" id="fileImport" accept=".json,application/json" hidden>
+    </div>
+  </aside>
+
+  <!-- ---------- 中：画布 ---------- -->
+  <section class="panel panel-stage" id="panelStage">
+
+    <div class="stage-head">
+      <div class="stage-tabs">
+        <button class="tab active" data-tab="result">生成结果</button>
+        <button class="tab" data-tab="history">历史记录 <span class="count-badge" id="histCount">0</span></button>
+      </div>
+      <div class="stage-head-actions">
+        <span class="combo-info" id="comboInfo"></span>
+        <button class="btn tiny ghost" id="btnClearPrompt">清空对话框</button>
+      </div>
+    </div>
+
+    <!-- 结果区 -->
+    <div class="stage-body" id="tabResult">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-art">🎨</div>
+        <h3>画布还空着</h3>
+        <p>从左侧点几个提示词拼成一句话，再用右侧参数调好，按下「开始绘制」。</p>
+        <div class="empty-tips">
+          <span>① 点词库卡片追加提示词</span>
+          <span>② 在对话框微调组合</span>
+          <span>③ 一键出图</span>
+        </div>
+      </div>
+      <div class="result-grid" id="resultGrid"></div>
+    </div>
+
+    <!-- 历史区 -->
+    <div class="stage-body hidden" id="tabHistory">
+      <div class="history-grid" id="historyGrid"></div>
+      <div class="empty-state small hidden" id="historyEmpty">
+        <div class="empty-art">📜</div>
+        <h3>还没有历史记录</h3>
+        <p>生成过的图会自动归档到这里。</p>
+      </div>
+    </div>
+
+    <!-- 底部输入台 -->
+    <div class="composer">
+      <div class="chips-row" id="chipsRow"></div>
+      <div class="composer-main">
+        <textarea id="promptBox" rows="3" placeholder="在这里组合你的提示词…&#10;（点左侧卡片可追加，Ctrl+Enter 开始绘制）" spellcheck="false"></textarea>
+        <div class="composer-side">
+          <div class="prompt-meta">
+            <span id="charCount">0 字符</span>
+            <span class="sep">·</span>
+            <span id="tokenEst">≈0 tokens</span>
+          </div>
+          <button class="btn primary big" id="btnGenerate">
+            <span class="gen-label">开始绘制</span>
+            <span class="gen-spinner" hidden></span>
+          </button>
+        </div>
+      </div>
+      <div class="composer-foot">
+        <label class="inline-check">
+          <input type="checkbox" id="chkAppendJoin" checked>
+          <span>追加时自动补分隔符</span>
+        </label>
+        <label class="inline-check">
+          <input type="checkbox" id="chkDedupe" checked>
+          <span>追加时去重</span>
+        </label>
+        <span class="grow"></span>
+        <button class="link-btn" id="btnUndoAppend">撤销上次追加</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- 右：参数 ---------- -->
+  <aside class="panel panel-params" id="panelParams">
+    <div class="panel-head">
+      <div class="panel-title"><span>生成参数</span></div>
+      <div class="panel-head-actions">
+        <button class="icon-btn" id="btnCloseParams" title="收起">✕</button>
+      </div>
+    </div>
+
+    <div class="params-scroll">
+
+      <details class="acc" open>
+        <summary>接口配置</summary>
+        <div class="acc-body">
+          <div class="field">
+            <label>接口地址 Base URL</label>
+            <input type="text" id="cfgBaseUrl" placeholder="https://api.openai.com/v1" spellcheck="false">
+            <small>填到 <code>/v1</code> 为止，会自动拼接 <code>/images/generations</code></small>
+          </div>
+          <div class="field">
+            <label>API Key</label>
+            <div class="pw-wrap">
+              <input type="password" id="cfgApiKey" placeholder="sk-…" spellcheck="false">
+              <button class="pw-toggle" data-target="cfgApiKey" title="显示/隐藏">👁</button>
+            </div>
+            <small>仅存于本机浏览器，不会上传到任何地方</small>
+          </div>
+          <div class="field">
+            <label>模型 Model</label>
+            <div class="model-wrap">
+              <input type="text" id="cfgModel" list="modelPresets" placeholder="gpt-image-1" spellcheck="false">
+              <button class="model-fetch-btn" id="btnFetchModels" title="从接口拉取可用模型列表">获取模型</button>
+            </div>
+            <datalist id="modelPresets">
+              <option value="gpt-image-1"></option>
+              <option value="dall-e-3"></option>
+              <option value="dall-e-2"></option>
+              <option value="flux-schnell"></option>
+              <option value="flux-dev"></option>
+              <option value="stable-diffusion-xl"></option>
+              <option value="Kwai-Kolors/Kolors"></option>
+              <option value="seedream-3.0"></option>
+            </datalist>
+            <div class="model-picker hidden" id="modelPicker">
+              <div class="model-picker-head">
+                <input type="text" id="modelFilter" placeholder="筛选模型…" spellcheck="false">
+                <span class="model-count" id="modelCount"></span>
+              </div>
+              <div class="model-list" id="modelList"></div>
+            </div>
+          </div>
+          <div class="field-row">
+            <button class="btn tiny ghost" id="btnTestApi">测试连接</button>
+            <button class="btn tiny ghost" id="btnPreset">快填预设</button>
+          </div>
+          <div class="test-result" id="apiTestResult"></div>
+        </div>
+      </details>
+
+      <details class="acc" open>
+        <summary>画布尺寸</summary>
+        <div class="acc-body">
+          <div class="field">
+            <label>尺寸预设</label>
+            <div class="size-grid" id="sizeGrid"></div>
+          </div>
+          <div class="field-row two">
+            <div class="field">
+              <label>宽</label>
+              <input type="number" id="cfgWidth" value="1024" min="256" max="4096" step="64">
+            </div>
+            <div class="field">
+              <label>高</label>
+              <input type="number" id="cfgHeight" value="1024" min="256" max="4096" step="64">
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="inline-check"><input type="checkbox" id="chkSizeString"><span>以 <code>WxH</code> 字符串传参</span></label>
+          </div>
+          <small class="block">不同厂商参数名不一，可在下方「高级」里自定义字段名。</small>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>生成选项</summary>
+        <div class="acc-body">
+          <div class="field">
+            <label>一次生成数量</label>
+            <input type="range" id="cfgCount" min="1" max="8" value="1" step="1">
+            <output id="cfgCountOut">1 张</output>
+          </div>
+          <div class="field">
+            <label>质量</label>
+            <select id="cfgQuality">
+              <option value="">默认</option>
+              <option value="standard">standard</option>
+              <option value="hd">hd</option>
+              <option value="high">high</option>
+              <option value="medium">medium</option>
+              <option value="low">low</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>风格</label>
+            <select id="cfgStyle">
+              <option value="">默认</option>
+              <option value="vivid">vivid（鲜艳）</option>
+              <option value="natural">natural（自然）</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>返回格式</label>
+            <select id="cfgResponse">
+              <option value="">自动识别</option>
+              <option value="url">URL 链接</option>
+              <option value="b64_json">Base64</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>负向提示词</summary>
+        <div class="acc-body">
+          <div class="field">
+            <label>Negative Prompt</label>
+            <textarea id="cfgNegative" rows="3" placeholder="lowres, bad anatomy, watermark…" spellcheck="false"></textarea>
+            <label class="inline-check"><input type="checkbox" id="chkUseNegative"><span>在请求中携带该字段</span></label>
+          </div>
+          <div class="field">
+            <label>负向词库</label>
+            <select id="cfgNegativePreset">
+              <option value="">选择常用负向词包…</option>
+              <option value="lowres, bad anatomy, bad hands, missing fingers, extra digits, worst quality, low quality, jpeg artifacts, watermark, signature, text">通用防崩坏</option>
+              <option value="blurry, out of focus, motion blur, noise, grain">清晰度强化</option>
+              <option value="ugly, deformed, mutated, disfigured, extra limbs, malformed limbs">人体防畸形</option>
+              <option value="watermark, logo, copyright, signature, username, text, stamp">去除水印文字</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>高级 · 自定义请求参数</summary>
+        <div class="acc-body">
+          <div class="field">
+            <label>参数名映射</label>
+            <small class="block">有些接口用 <code>width/height</code>，有些用 <code>size</code>。不确定就留空走默认。</small>
+          </div>
+          <div class="field-row two">
+            <div class="field"><label>尺寸字段名</label><input type="text" id="mapSize" placeholder="size" spellcheck="false"></div>
+            <div class="field"><label>负向字段名</label><input type="text" id="mapNegative" placeholder="negative_prompt" spellcheck="false"></div>
+          </div>
+          <div class="field">
+            <label>额外 JSON 参数</label>
+            <textarea id="cfgExtraJson" rows="4" placeholder='{&#10;  "n": 1,&#10;  "steps": 28&#10;}' spellcheck="false"></textarea>
+            <small>会浅合并进请求体，覆盖同名默认值。</small>
+          </div>
+          <div class="field">
+            <label class="inline-check"><input type="checkbox" id="chkDebug"><span>显示请求体预览</span></label>
+          </div>
+          <pre class="debug-pre hidden" id="debugPre"></pre>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>云同步 · GitHub</summary>
+        <div class="acc-body">
+          <div class="note-box">
+            把提示词库存进你自己的 GitHub 仓库，换台设备打开同一网址就能读到同一份词库。
+          </div>
+          <div class="field">
+            <label>仓库 Owner / 用户名</label>
+            <input type="text" id="ghOwner" placeholder="your-github-name" spellcheck="false">
+          </div>
+          <div class="field">
+            <label>仓库名 Repo</label>
+            <input type="text" id="ghRepo" placeholder="prompt-painter" spellcheck="false">
+          </div>
+          <div class="field">
+            <label>分支</label>
+            <input type="text" id="ghBranch" value="main" spellcheck="false">
+          </div>
+          <div class="field">
+            <label>文件路径</label>
+            <input type="text" id="ghPath" value="prompts.json" spellcheck="false">
+          </div>
+          <div class="field">
+            <label>Personal Access Token</label>
+            <div class="pw-wrap">
+              <input type="password" id="ghToken" placeholder="github_pat_… 或 ghp_…" spellcheck="false">
+              <button class="pw-toggle" data-target="ghToken" title="显示/隐藏">👁</button>
+            </div>
+            <small>需 <b>Contents: Read and write</b> 权限。仅存本机，直接发给 GitHub，不经过任何中间服务器。</small>
+          </div>
+          <div class="field-row">
+            <button class="btn tiny primary" id="btnGhPush">上传到云端</button>
+            <button class="btn tiny ghost" id="btnGhPull">从云端拉取</button>
+          </div>
+          <div class="field-row">
+            <label class="inline-check"><input type="checkbox" id="chkAutoSync" checked><span>修改后自动上传</span></label>
+          </div>
+          <div class="field">
+            <label class="inline-check"><input type="checkbox" id="chkSyncPrompt"><span>公开仓库（跳过 token，仅只读拉取）</span></label>
+          </div>
+          <div class="test-result" id="ghResult"></div>
+        </div>
+      </details>
+
+      <details class="acc">
+        <summary>数据与备份</summary>
+        <div class="acc-body">
+          <div class="field-row">
+            <button class="btn tiny ghost" id="btnExport2">导出 JSON</button>
+            <button class="btn tiny ghost" id="btnImport2">导入 JSON</button>
+          </div>
+          <div class="field-row">
+            <button class="btn tiny ghost" id="btnWipeGen">清空生成历史</button>
+            <button class="btn tiny danger" id="btnWipeAll">重置全部数据</button>
+          </div>
+          <small class="block" id="storeStat"></small>
+        </div>
+      </details>
+
+    </div>
+  </aside>
+</main>
+
+<!-- 移动端遮罩 -->
+<div class="scrim" id="scrim" hidden></div>
+
+<!-- 图片灯箱 -->
+<div class="lightbox" id="lightbox" hidden>
+  <button class="lb-close" id="lbClose">✕</button>
+  <img id="lbImg" alt="预览">
+  <div class="lb-bar">
+    <input type="text" id="lbPrompt" readonly>
+    <button class="btn tiny ghost" id="lbCopyPrompt">复制提示词</button>
+    <a class="btn tiny primary" id="lbDownload" download="painting.png">下载原图</a>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast-wrap" id="toastWrap"></div>
+
+<!-- 设置/关于 弹窗 -->
+<div class="modal" id="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3 id="modalTitle">标题</h3>
+      <button class="icon-btn" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
