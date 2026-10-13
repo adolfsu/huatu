@@ -28,6 +28,7 @@
 
   <div class="topbar-actions">
     <button class="btn ghost" id="btnTheme" title="切换主题">◐</button>
+    <button class="btn ghost desktop-only" id="btnVideo" title="视频生成工作台">🎬 视频</button>
     <button class="btn ghost desktop-only" id="btnSettings" title="打开设置">⚙ 设置</button>
     <button class="btn ghost mobile-only" id="btnToggleLib" title="提示词库">☰</button>
     <button class="btn ghost mobile-only" id="btnToggleParams" title="参数">⚙</button>
@@ -40,6 +41,7 @@
   <div class="more-sheet">
     <div class="more-handle"></div>
     <button class="more-item" data-more="theme"><span class="mi-ico">◐</span>切换浅色 / 深色</button>
+    <button class="more-item" data-more="video"><span class="mi-ico">🎬</span>视频生成</button>
     <button class="more-item" data-more="matrix"><span class="mi-ico">⧉</span>组合出图</button>
     <button class="more-item" data-more="download"><span class="mi-ico">⤓</span>批量下载</button>
     <button class="more-item" data-more="img2img"><span class="mi-ico">🖼</span>图生图</button>
@@ -598,6 +600,256 @@
       <span class="grow"></span>
       <span class="matrix-progress" id="matrixProgress"></span>
       <button class="btn primary" id="matrixRun">开始组合出图</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 视频生成工作台 ============ -->
+<div class="vstudio" id="vstudio" hidden>
+  <div class="vs-box">
+
+    <div class="vs-head">
+      <div class="vs-title">
+        <b>🎬 视频生成</b>
+        <small>文生视频 · 图生视频 · 独立接口</small>
+      </div>
+      <div class="vs-head-actions">
+        <span class="vs-api-pill" id="vsApiPill" data-state="off">接口未配置</span>
+        <button class="icon-btn" id="vsClose" title="关闭">✕</button>
+      </div>
+    </div>
+
+    <div class="vs-body">
+
+      <!-- ---------- 左：输入 ---------- -->
+      <section class="vs-input">
+
+        <div class="vs-seg" id="vsMode">
+          <button class="vs-seg-btn active" data-vmode="t2v">✦ 文生视频</button>
+          <button class="vs-seg-btn" data-vmode="i2v">🖼 图生视频</button>
+        </div>
+
+        <!-- 参考图（仅图生视频） -->
+        <div class="vs-ref-block" id="vsRefBlock" hidden>
+          <div class="vs-drop" id="vsDrop">
+            <input type="file" id="vsFile" accept="image/*" hidden>
+            <div class="vs-drop-ico">🖼</div>
+            <div class="vs-drop-txt">
+              <b>点击选择首帧图</b>
+              <small>也可拖拽到此处，或 Ctrl+V 粘贴</small>
+            </div>
+          </div>
+          <div class="vs-ref-card" id="vsRefCard" hidden>
+            <img id="vsRefThumb" alt="首帧">
+            <div class="vs-ref-meta">
+              <b id="vsRefName">frame.png</b>
+              <span id="vsRefSize"></span>
+              <small>作为视频首帧</small>
+            </div>
+            <button class="icon-btn" id="vsRefRemove" title="移除">✕</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="vs-label-row">
+            <label>提示词 Prompt</label>
+            <button class="link-btn" id="vsPullPrompt">⇠ 取用主对话框</button>
+          </div>
+          <textarea id="vsPrompt" rows="5" placeholder="描述画面内容、主体运动与镜头调度…&#10;例如：镜头缓缓推进，女孩转头微笑，发丝轻扬，柔和逆光" spellcheck="false"></textarea>
+        </div>
+
+        <div class="field">
+          <label>负向提示词（可选）</label>
+          <textarea id="vsNegative" rows="2" placeholder="blurry, distorted, watermark, text" spellcheck="false"></textarea>
+        </div>
+
+        <div class="vs-grid">
+          <div class="field">
+            <label>分辨率</label>
+            <select id="vsSize">
+              <option value="">不指定</option>
+              <option value="1280x720">1280×720 横屏</option>
+              <option value="720x1280">720×1280 竖屏</option>
+              <option value="1920x1080">1920×1080 横屏</option>
+              <option value="1080x1920">1080×1920 竖屏</option>
+              <option value="1024x1024">1024×1024 方形</option>
+              <option value="__custom__">自定义…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>时长</label>
+            <select id="vsSeconds">
+              <option value="">不指定</option>
+              <option value="4">4 秒</option>
+              <option value="5">5 秒</option>
+              <option value="6">6 秒</option>
+              <option value="8">8 秒</option>
+              <option value="10">10 秒</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>帧率</label>
+            <select id="vsFps">
+              <option value="">不指定</option>
+              <option value="24">24 fps</option>
+              <option value="30">30 fps</option>
+              <option value="60">60 fps</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>随机种子</label>
+            <input type="number" id="vsSeed" placeholder="留空随机" min="0" step="1">
+          </div>
+        </div>
+
+        <div class="vs-grid" id="vsCustomSize" hidden>
+          <div class="field">
+            <label>自定义宽</label>
+            <input type="number" id="vsW" value="1280" min="128" max="4096" step="16">
+          </div>
+          <div class="field">
+            <label>自定义高</label>
+            <input type="number" id="vsH" value="720" min="128" max="4096" step="16">
+          </div>
+        </div>
+
+        <!-- 接口配置 -->
+        <details class="acc" id="vsAccCfg">
+          <summary>接口配置 · 独立于画图</summary>
+          <div class="acc-body">
+            <div class="note-box">
+              视频接口<b>单独填写</b>，和画图接口互不干扰。若用的是同一个服务商，点「复用画图接口」一键搬过来。
+            </div>
+            <div class="field">
+              <label>接口地址 Base URL</label>
+              <div class="model-wrap">
+                <input type="text" id="vsBaseUrl" placeholder="https://api.example.com/v1" spellcheck="false">
+                <button class="model-fetch-btn" id="vsReuseImg" title="复制画图接口的地址与 Key">复用画图接口</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>API Key</label>
+              <div class="pw-wrap">
+                <input type="password" id="vsApiKey" placeholder="sk-…" spellcheck="false">
+                <button class="pw-toggle" data-target="vsApiKey" title="显示/隐藏">👁</button>
+              </div>
+            </div>
+            <div class="field">
+              <label>模型 Model</label>
+              <div class="model-wrap">
+                <input type="text" id="vsModel" list="vsModelPresets" placeholder="sora-2" spellcheck="false">
+                <button class="model-fetch-btn" id="vsFetchModels" title="从视频接口拉取可用模型">获取模型</button>
+              </div>
+              <datalist id="vsModelPresets">
+                <option value="sora-2"></option>
+                <option value="sora-2-pro"></option>
+                <option value="veo3"></option>
+                <option value="veo3-fast"></option>
+                <option value="kling-v1"></option>
+                <option value="cogvideox"></option>
+                <option value="wan2.1-t2v"></option>
+                <option value="vidu-q1"></option>
+                <option value="hailuo-02"></option>
+              </datalist>
+              <small id="vsModelHint">视频接口若提供 <code>/models</code> 就能一键拉取</small>
+            </div>
+
+            <div class="field">
+              <label>提交路径</label>
+              <input type="text" id="vsSubmitPath" placeholder="/video/generations" spellcheck="false">
+              <small>拼在 Base URL 之后。常见写法：<code>/video/generations</code>、<code>/videos</code></small>
+            </div>
+            <div class="field">
+              <label>查询路径模板（可选）</label>
+              <input type="text" id="vsQueryPath" placeholder="留空 = 提交路径 + /{id}" spellcheck="false">
+              <small>用 <code>{id}</code> 代表任务号。若走查询串可写 <code>/video/generations?id={id}</code></small>
+            </div>
+
+            <div class="field-row two">
+              <div class="field">
+                <label>提交格式</label>
+                <select id="vsFormat">
+                  <option value="json">JSON</option>
+                  <option value="multipart">multipart/form-data</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>鉴权方式</label>
+                <select id="vsAuth">
+                  <option value="bearer">Authorization: Bearer</option>
+                  <option value="x-api-key">x-api-key</option>
+                  <option value="none">不携带</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field-row two">
+              <div class="field">
+                <label>轮询间隔（秒）</label>
+                <input type="number" id="vsPollEvery" value="4" min="1" max="60" step="1">
+              </div>
+              <div class="field">
+                <label>最长等待（秒）</label>
+                <input type="number" id="vsPollMax" value="300" min="10" max="1800" step="10">
+              </div>
+            </div>
+
+            <div class="field-row">
+              <button class="btn tiny ghost" id="vsTest">测试连接</button>
+              <button class="btn tiny ghost" id="vsSyncBack" title="把视频接口配置复制回画图接口">同步给画图</button>
+            </div>
+            <div class="test-result" id="vsTestResult"></div>
+          </div>
+        </details>
+
+        <!-- 字段名映射 -->
+        <details class="acc" id="vsAccAdv">
+          <summary>高级 · 字段名映射</summary>
+          <div class="acc-body">
+            <div class="note-box">不同厂商字段名不一样，不确定就留空走默认。</div>
+            <div class="field-row two">
+              <div class="field"><label>尺寸字段</label><input type="text" id="vsMapSize" placeholder="size" spellcheck="false"></div>
+              <div class="field"><label>时长字段</label><input type="text" id="vsMapDuration" placeholder="seconds" spellcheck="false"></div>
+            </div>
+            <div class="field-row two">
+              <div class="field"><label>图片字段</label><input type="text" id="vsMapImage" placeholder="image" spellcheck="false"></div>
+              <div class="field"><label>负向字段</label><input type="text" id="vsMapNegative" placeholder="negative_prompt" spellcheck="false"></div>
+            </div>
+            <div class="field">
+              <label>额外 JSON 参数</label>
+              <textarea id="vsExtraJson" rows="3" placeholder='{&#10;  "camerafixed": false&#10;}' spellcheck="false"></textarea>
+              <small>浅合并进请求体，可覆盖上面所有默认字段。</small>
+            </div>
+            <div class="field">
+              <label class="inline-check"><input type="checkbox" id="vsDebug"><span>显示请求体预览</span></label>
+            </div>
+            <pre class="debug-pre hidden" id="vsDebugPre"></pre>
+          </div>
+        </details>
+      </section>
+
+      <!-- ---------- 右：结果 ---------- -->
+      <section class="vs-output">
+        <div class="vs-output-head">
+          <span>生成结果 <b id="vsCount">0</b></span>
+          <span class="grow"></span>
+          <button class="link-btn" id="vsClearAll">清空</button>
+        </div>
+
+        <div class="vs-list" id="vsList"></div>
+
+        <div class="vs-empty" id="vsEmpty">
+          <div class="empty-art">🎬</div>
+          <h3>还没有视频</h3>
+          <p>写好提示词，点右下角「生成视频」。<br>视频多为异步任务，请耐心等待 1~3 分钟。</p>
+        </div>
+
+        <div class="vs-foot">
+          <span class="vs-progress" id="vsProgress"></span>
+          <button class="btn primary" id="vsGenerate">🎬 生成视频</button>
+        </div>
+      </section>
+
     </div>
   </div>
 </div>

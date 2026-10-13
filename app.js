@@ -210,6 +210,12 @@ const state = {
     rows: [],           // [{ id, a, b, text, on }]
     running: false,
   },
+  video: {              // 视频生成工作台（结果不持久化，链接通常有时效）
+    tasks: [],          // [{ id, kind:'task'|'video'|'error', ... }]
+    running: false,
+    abort: false,
+    ref: null,          // 图生视频的首帧图 { dataUrl, base64, ... }（仅存内存）
+  },
 };
 
 function defaultCfg() {
@@ -246,6 +252,33 @@ function defaultCfg() {
     trApiKey: '',            // 留空则用画图 Key
     trModel: 'gpt-4o-mini',
     trAction: 'replace',
+    /* 视频生成（接口完全独立，与画图互不影响） */
+    video: {
+      mode: 't2v',             // t2v 文生视频 | i2v 图生视频
+      baseUrl: '',
+      apiKey: '',
+      model: 'sora-2',
+      submitPath: '/video/generations',
+      queryPath: '',           // 留空 = 提交路径 + /{id}
+      format: 'json',          // json | multipart
+      auth: 'bearer',          // bearer | x-api-key | none
+      pollEvery: 4,            // 轮询间隔（秒）
+      pollMax: 300,            // 最长等待（秒）
+      size: '1280x720',
+      customW: 1280,
+      customH: 720,
+      seconds: '5',
+      fps: '',
+      seed: '',
+      negative: '',
+      mapSize: '',
+      mapDuration: '',
+      mapImage: '',
+      mapNegative: '',
+      extraJson: '',
+      debug: false,
+      prompt: '',              // 提示词草稿
+    },
     gh: {
       owner: '', repo: '', branch: 'main', path: 'prompts.json',
       token: '', autoSync: true, publicRead: false, lastSync: 0,
@@ -296,7 +329,9 @@ function loadAll() {
 
   const cfgRaw = store.read(LS.cfg, {}) || {};
   const cfg = Object.assign(base, cfgRaw);
-  cfg.gh = Object.assign(base.gh, cfgRaw.gh || {});
+  // 嵌套对象要单独合并默认值，否则旧配置缺字段会变成 undefined
+  cfg.gh = Object.assign(defaultCfg().gh, cfgRaw.gh || {});
+  cfg.video = Object.assign(defaultCfg().video, cfgRaw.video || {});
   // 旧字段迁移
   if (cfgRaw.mode && !cfgRaw.sizeString) { /* noop */ }
   state.cfg = cfg;
@@ -1793,6 +1828,12 @@ function bindEvents() {
         const f = it.getAsFile();
         if (f) {
           e.preventDefault();
+          // 视频工作台开着 → 图片交给视频模块当首帧
+          if (els.vstudio && !els.vstudio.hidden) {
+            if (state.cfg.video.mode === 'i2v') vsHandleFile(f);
+            else toast('当前是文生视频，先切到「图生视频」再粘贴首帧', 'warn', 3200);
+            return;
+          }
           handleRefFile(f);
           // 同步打开参数面板里的图生图区域
           const acc = document.getElementById('accI2I');
@@ -2677,6 +2718,7 @@ function handleMoreAction(action) {
   closeMoreMenu();
   switch (action) {
     case 'theme':    $('#btnTheme').click(); break;
+    case 'video':    openVideo(); break;
     case 'matrix':   openMatrix(); break;
     case 'download': $('#btnDownloadMode').click(); break;
     case 'img2img':  $('#btnImg2Img').click(); break;
@@ -2780,6 +2822,825 @@ async function translatePrompt() {
   }
 }
 
+/* ============================================================
+   视频生成（文生视频 / 图生视频）
+   —— 接口独立配置，与画图互不影响
+   —— 同时兼容「同步直返视频」与「异步任务轮询」两种形态
+   ============================================================ */
+
+const VS_DONE_RE = /^(succeed(ed)?|success|completed?|done|finished|ready|ok|2|200)$/i;
+const VS_FAIL_RE = /^(fail(ed|ure)?|error|reject(ed)?|cancell?ed|expired|timeout|3|4|5)$/i;
+const VS_VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v)(\?|#|$)/i;
+
+/* ---------- 路径拼接 ---------- */
+function vsBase() {
+  return String(state.cfg.video.baseUrl || '').trim().replace(/\/+$/, '');
+}
+
+function vsJoin(base, path) {
+  const b = String(base || '').replace(/\/+$/, '');
+  let p = String(path || '').trim();
+  if (!p) return b;
+  if (/^https?:\/\//i.test(p)) return p;
+  if (!/^\//.test(p)) p = '/' + p;
+  return b + p;
+}
+
+function vsSubmitUrl() {
+  const v = state.cfg.video;
+  return vsJoin(vsBase(), String(v.submitPath || '').trim() || '/video/generations');
+}
+
+/* 查询地址：默认 = 提交路径 + /{id}；也可自定义模板 */
+function vsQueryUrl(taskId) {
+  const v = state.cfg.video;
+  let tpl = String(v.queryPath || '').trim();
+  if (!tpl) {
+    let p = String(v.submitPath || '').trim() || '/video/generations';
+    if (!/^\//.test(p)) p = '/' + p;
+    tpl = p.replace(/\/+$/, '') + '/{id}';
+  }
+  return vsJoin(vsBase(), tpl.replace(/\{id\}/g, encodeURIComponent(taskId)));
+}
+
+function vsHeaders(json) {
+  const v = state.cfg.video;
+  const h = {};
+  if (json) h['Content-Type'] = 'application/json';
+  const key = String(v.apiKey || '').trim();
+  if (key && v.auth !== 'none') {
+    if (v.auth === 'x-api-key') h['x-api-key'] = key;
+    else h['Authorization'] = 'Bearer ' + key;
+  }
+  return h;
+}
+
+/* ---------- 响应嗅探：不挑字段名，尽量猜得出来 ---------- */
+function vsDeepFind(obj, keys, depth = 0) {
+  if (!obj || typeof obj !== 'object' || depth > 6) return null;
+  for (const k of keys) {
+    const val = obj[k];
+    if (typeof val === 'string' && val) return val;
+    if (typeof val === 'number' && isFinite(val)) return String(val);
+  }
+  for (const k of Object.keys(obj)) {
+    const r = vsDeepFind(obj[k], keys, depth + 1);
+    if (r != null && r !== '') return r;
+  }
+  return null;
+}
+
+function vsExtractTaskId(data) {
+  return vsDeepFind(data, [
+    'task_id', 'taskId', 'request_id', 'requestId',
+    'video_id', 'videoId', 'job_id', 'jobId', 'generation_id', 'id',
+  ]);
+}
+
+function vsExtractStatus(data) {
+  return vsDeepFind(data, ['status', 'state', 'task_status', 'taskStatus', 'video_status']);
+}
+
+function vsNormalizeStatus(raw) {
+  if (raw == null || raw === '') return 'pending';
+  const s = String(raw).trim();
+  if (VS_DONE_RE.test(s)) return 'done';
+  if (VS_FAIL_RE.test(s)) return 'fail';
+  return 'running';
+}
+
+function vsLooksLikeVideoUrl(s) {
+  if (typeof s !== 'string' || s.length < 8) return false;
+  if (/^data:video\//i.test(s)) return true;
+  if (!/^https?:\/\//i.test(s)) return false;
+  return VS_VIDEO_EXT_RE.test(s);
+}
+
+function vsCollectUrls(obj, path, out, depth) {
+  if (!obj || typeof obj !== 'object' || depth > 8) return out;
+  Object.keys(obj).forEach(k => {
+    const val = obj[k];
+    const p = path ? path + '.' + k : k;
+    if (typeof val === 'string') {
+      if (vsLooksLikeVideoUrl(val)) out.push({ url: val, key: p });
+    } else if (val && typeof val === 'object') {
+      vsCollectUrls(val, p, out, depth + 1);
+    }
+  });
+  return out;
+}
+
+/* 字段名里带 video / url / output 的优先，避免误抓封面图 */
+function vsExtractVideoUrl(data) {
+  if (typeof data === 'string') return vsLooksLikeVideoUrl(data) ? data : '';
+  if (!data || typeof data !== 'object') return '';
+  const found = vsCollectUrls(data, '', [], 0);
+  if (!found.length) return '';
+  found.sort((a, b) => {
+    const rank = x => (/video/i.test(x.key) ? 0 : /url|output|result|src|download/i.test(x.key) ? 1 : 2);
+    return rank(a) - rank(b);
+  });
+  return found[0].url;
+}
+
+function vsExtractB64Video(data) {
+  const b64 = vsDeepFind(data, ['video_base64', 'b64_json', 'video_b64']);
+  if (b64 && b64.length > 500) return 'data:video/mp4;base64,' + b64;
+  return '';
+}
+
+function vsExtractCover(data) {
+  const c = vsDeepFind(data, [
+    'cover_url', 'coverUrl', 'cover', 'thumbnail_url', 'thumbnail',
+    'poster', 'first_frame_url', 'image_url',
+  ]);
+  if (typeof c !== 'string' || !c) return '';
+  return (/^https?:\/\//i.test(c) || /^data:image\//i.test(c)) ? c : '';
+}
+
+function vsExtractProgress(data) {
+  const p = vsDeepFind(data, ['progress', 'percent', 'percentage', 'progress_percent']);
+  if (p == null) return null;
+  const n = parseFloat(p);
+  if (!isFinite(n)) return null;
+  return Math.round(n <= 1 ? n * 100 : n);
+}
+
+function vsTaskMessage(data) {
+  if (!data) return '';
+  if (typeof data === 'string') return data.slice(0, 400);
+  if (typeof data === 'object') {
+    if (typeof data.error === 'string') return data.error.slice(0, 400);
+    if (data.error && typeof data.error === 'object' && data.error.message) {
+      return String(data.error.message).slice(0, 400);
+    }
+    const m = vsDeepFind(data, ['fail_reason', 'error_message', 'error_msg', 'message', 'msg', 'reason']);
+    if (m) return String(m).slice(0, 400);
+  }
+  return '';
+}
+
+function vsErrMsg(data, text) {
+  const m = vsTaskMessage(data);
+  if (m) return m;
+  return String(text || '').slice(0, 400) || '（无返回内容）';
+}
+
+function vsShort(data, text) {
+  return (data ? JSON.stringify(data) : String(text || '')).slice(0, 300);
+}
+
+/* ---------- 网络 ---------- */
+async function vsFetch(url, opts, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 120000);
+  try {
+    const res = await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch (e) { /* 可能不是 JSON */ }
+    return { ok: res.ok, status: res.status, data, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* data URI → Blob（multipart 上传首帧图时需要真文件） */
+function vsDataUrlToBlob(dataUrl) {
+  const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl || '');
+  if (!m) return null;
+  const mime = m[1] || 'image/png';
+  try {
+    const bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime });
+  } catch (e) { return null; }
+}
+
+/* ---------- 构造请求体 ---------- */
+function vsBuildPayload(prompt) {
+  const v = state.cfg.video;
+  const body = { model: v.model || 'sora-2', prompt };
+
+  let sizeVal = '';
+  if (v.size === '__custom__') sizeVal = `${v.customW}x${v.customH}`;
+  else if (v.size) sizeVal = v.size;
+  if (sizeVal) {
+    const sf = (v.mapSize || 'size').trim() || 'size';
+    body[sf] = sizeVal;
+  }
+
+  if (v.seconds !== '' && v.seconds != null) {
+    const df = (v.mapDuration || 'seconds').trim() || 'seconds';
+    const n = Number(v.seconds);
+    body[df] = isFinite(n) && String(v.seconds).trim() !== '' ? n : v.seconds;
+  }
+
+  if (v.fps !== '' && v.fps != null) body.fps = Number(v.fps);
+  if (String(v.seed).trim() !== '') body.seed = Number(v.seed);
+
+  if (String(v.negative || '').trim()) {
+    const nf = (v.mapNegative || 'negative_prompt').trim() || 'negative_prompt';
+    body[nf] = normalizePrompt(v.negative);
+  }
+
+  /* 图生视频：带上首帧图 */
+  if (v.mode === 'i2v') {
+    const ref = state.video.ref;
+    if (!ref || !ref.dataUrl) throw new Error('图生视频需要先上传一张首帧图');
+    const f = (v.mapImage || 'image').trim() || 'image';
+    body[f] = ref.dataUrl;
+  }
+
+  if (String(v.extraJson || '').trim()) {
+    try {
+      const extra = JSON.parse(v.extraJson);
+      if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(body, extra);
+    } catch (e) {
+      throw new Error('额外 JSON 参数格式错误：' + e.message);
+    }
+  }
+  return body;
+}
+
+function vsBuildFormData(payload) {
+  const fd = new FormData();
+  Object.keys(payload).forEach(k => {
+    const val = payload[k];
+    if (val == null) return;
+    if (typeof val === 'string' && /^data:image\//i.test(val)) {
+      const blob = vsDataUrlToBlob(val);
+      if (blob) { fd.append(k, blob, 'frame.png'); return; }
+    }
+    fd.append(k, typeof val === 'object' ? JSON.stringify(val) : String(val));
+  });
+  return fd;
+}
+
+/* ---------- 主流程 ---------- */
+function vsDur(ms) {
+  const s = Math.max(0, Math.round((ms || 0) / 1000));
+  if (s < 60) return s + ' 秒';
+  return Math.floor(s / 60) + ' 分 ' + String(s % 60).padStart(2, '0') + ' 秒';
+}
+
+function onVsGenerateClick() {
+  if (state.video.running) {
+    state.video.abort = true;
+    els.vsProgress.textContent = '正在取消…';
+    return;
+  }
+  vsGenerate();
+}
+
+function setVsGenerating(on) {
+  const btn = els.vsGenerate;
+  btn.disabled = false;
+  btn.textContent = on ? '✕ 取消生成' : '🎬 生成视频';
+  btn.classList.toggle('danger', on);
+  els.vsProgress.classList.toggle('busy', on);
+  if (!on) els.vsProgress.textContent = '';
+}
+
+async function vsGenerate() {
+  if (state.video.running) { toast('上一批还在生成中', 'warn'); return; }
+
+  const v = state.cfg.video;
+  const raw = els.vsPrompt.value.trim();
+  if (!raw) { toast('先写一段视频提示词吧', 'warn'); els.vsPrompt.focus(); return; }
+  if (!vsBase()) {
+    toast('请先在「接口配置」里填写视频接口地址', 'warn', 3800);
+    els.vsAccCfg.open = true;
+    els.vsInput.scrollTop = els.vsInput.scrollHeight;
+    return;
+  }
+  if (v.mode === 'i2v' && !(state.video.ref && state.video.ref.dataUrl)) {
+    toast('图生视频需要先上传首帧图', 'warn', 3200);
+    return;
+  }
+
+  const prompt = normalizePrompt(raw);
+  let payload, url;
+  try {
+    payload = vsBuildPayload(prompt);
+    url = vsSubmitUrl();
+  } catch (e) { toast(e.message, 'err', 3600); return; }
+
+  if (v.debug) {
+    els.vsDebugPre.classList.remove('hidden');
+    els.vsDebugPre.textContent = `POST ${url}\n\n` + JSON.stringify(payload, null, 2);
+  }
+
+  state.video.running = true;
+  state.video.abort = false;
+  setVsGenerating(true);
+
+  const task = {
+    id: uid(), kind: 'task', status: 'submitting',
+    prompt, startedAt: Date.now(), elapsed: 0,
+    taskId: '', progress: null, polls: 0, rawStatus: '', message: '', src: '', cover: '',
+  };
+  state.video.tasks.unshift(task);
+  renderVs();
+
+  try {
+    const body = v.format === 'multipart'
+      ? vsBuildFormData(payload)
+      : JSON.stringify(payload);
+    const headers = vsHeaders(v.format !== 'multipart');
+
+    const res = await vsFetch(url, { method: 'POST', headers, body }, 180000);
+    if (!res.ok) throw new Error(`HTTP ${res.status} · ${vsErrMsg(res.data, res.text)}`);
+
+    /* 形态一：直接给了视频地址 */
+    const direct = vsExtractVideoUrl(res.data) || vsExtractB64Video(res.data);
+    if (direct) {
+      task.kind = 'video';
+      task.src = direct;
+      task.cover = vsExtractCover(res.data);
+      task.status = 'done';
+      task.elapsed = Date.now() - task.startedAt;
+      renderVs();
+      toast('视频已生成 🎬', 'ok', 3000);
+      return;
+    }
+
+    /* 形态二：给个任务号，慢慢轮询 */
+    const taskId = vsExtractTaskId(res.data);
+    if (!taskId) {
+      throw new Error('返回里既没有视频地址，也没有任务号：' + vsShort(res.data, res.text));
+    }
+    task.taskId = taskId;
+    task.status = 'running';
+    const st = vsExtractStatus(res.data);
+    if (st) task.rawStatus = String(st);
+    task.progress = vsExtractProgress(res.data);
+    renderVs();
+
+    await vsPollTask(task);
+  } catch (e) {
+    if (state.video.abort) {
+      state.video.tasks = state.video.tasks.filter(x => x.id !== task.id);
+      renderVs();
+      toast('已取消生成', '', 2000);
+      return;
+    }
+    let msg = e.message || String(e);
+    if (e.name === 'AbortError') msg = '请求超时或无响应';
+    else if (/Failed to fetch|NetworkError/i.test(msg)) {
+      msg = '网络请求失败：接口地址写错、被浏览器 CORS 拦截，或该站点不允许网页直连。';
+    }
+    task.kind = 'error';
+    task.status = 'fail';
+    task.message = msg;
+    task.elapsed = Date.now() - task.startedAt;
+    renderVs();
+    toast('视频生成失败，看右侧原因', 'err', 3600);
+  } finally {
+    state.video.running = false;
+    state.video.abort = false;
+    setVsGenerating(false);
+  }
+}
+
+async function vsPollTask(task) {
+  const v = state.cfg.video;
+  const every = clamp(Number(v.pollEvery) || 4, 1, 60) * 1000;
+  const maxMs = clamp(Number(v.pollMax) || 300, 10, 1800) * 1000;
+  const deadline = Date.now() + maxMs;
+  let attempt = 0;
+
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, every));
+    if (state.video.abort) throw new Error('已取消');
+
+    attempt++;
+    let res;
+    try {
+      res = await vsFetch(vsQueryUrl(task.taskId), { method: 'GET', headers: vsHeaders(false) }, 60000);
+    } catch (e) {
+      /* 单次查询失败不当场判死，容忍几轮抖动 */
+      if (attempt <= 3) { task.elapsed = Date.now() - task.startedAt; renderVs(); continue; }
+      throw e;
+    }
+
+    task.elapsed = Date.now() - task.startedAt;
+    task.polls = attempt;
+
+    if (!res.ok) {
+      if (attempt <= 3 && (res.status === 404 || res.status >= 500)) { renderVs(); continue; }
+      throw new Error(`查询失败 HTTP ${res.status} · ${vsErrMsg(res.data, res.text)}`);
+    }
+
+    const vid = vsExtractVideoUrl(res.data) || vsExtractB64Video(res.data);
+    if (vid) {
+      task.kind = 'video';
+      task.src = vid;
+      task.cover = vsExtractCover(res.data);
+      task.status = 'done';
+      task.rawStatus = '';
+      task.message = '';
+      renderVs();
+      toast('视频已生成 🎬', 'ok', 3000);
+      return;
+    }
+
+    const raw = vsExtractStatus(res.data);
+    const st = vsNormalizeStatus(raw);
+    task.rawStatus = raw == null ? '' : String(raw);
+    task.progress = vsExtractProgress(res.data);
+    task.message = vsTaskMessage(res.data);
+
+    if (st === 'fail') {
+      const detail = task.message || (task.rawStatus ? '（' + task.rawStatus + '）' : '');
+      throw new Error('任务失败' + (detail ? '：' + detail : ''));
+    }
+    renderVs();
+  }
+  throw new Error(`等待超时（超过 ${Math.round(maxMs / 1000)} 秒仍未完成）· 任务号 ${task.taskId}`);
+}
+
+/* ---------- 渲染 ---------- */
+const _vsEls = new Map();   // id → { sig, el }，复用 DOM 节点，避免打断视频播放
+
+function vsCardSig(t) {
+  if (t.kind === 'video') return 'v:' + t.id;
+  if (t.kind === 'error') return 'e:' + t.message;
+  return 't:' + t.status + ':' + Math.floor((t.elapsed || 0) / 1000) + ':' +
+         (t.progress == null ? '' : t.progress) + ':' + (t.polls || 0) + ':' + (t.rawStatus || '');
+}
+
+function vsCardHTML(t) {
+  if (t.kind === 'video') {
+    const openLink = /^data:/.test(t.src)
+      ? ''
+      : `<a class="icon-btn" href="${esc(t.src)}" target="_blank" rel="noopener" title="新窗口打开">↗</a>`;
+    return `<div class="vcard" data-vid="${t.id}">
+      <div class="vcard-body">
+        <video src="${esc(t.src)}"${t.cover ? ` poster="${esc(t.cover)}"` : ''} controls loop playsinline preload="metadata"></video>
+        <span class="vcard-badge">⏱ ${vsDur(t.elapsed)}</span>
+      </div>
+      <div class="vcard-bar">
+        <span class="txt" title="${esc(t.prompt)}">${esc(t.prompt)}</span>
+        <button class="icon-btn" data-vact="copy" data-vid="${t.id}" title="复制提示词">⧉</button>
+        <button class="icon-btn" data-vact="download" data-vid="${t.id}" title="下载视频">⤓</button>
+        ${openLink}
+      </div>
+    </div>`;
+  }
+
+  if (t.kind === 'error') {
+    return `<div class="vtask fail" data-vid="${t.id}">
+      <div class="vtask-head">✕ 生成失败</div>
+      <div class="vtask-msg">${esc(t.message || '未知错误')}</div>
+      <div class="vtask-meta">耗时 ${vsDur(t.elapsed)}${t.taskId ? ' · 任务号 ' + esc(t.taskId) : ''}</div>
+    </div>`;
+  }
+
+  const pct = t.progress == null ? '' : ` · ${t.progress}%`;
+  const label = t.status === 'submitting' ? '正在提交任务…' : '正在生成视频…';
+  const meta = [
+    '已等待 ' + vsDur(t.elapsed),
+    t.rawStatus ? '状态 ' + esc(t.rawStatus) : '',
+    t.taskId ? '任务 ' + esc(t.taskId) : '',
+    t.polls ? '第 ' + t.polls + ' 次查询' : '',
+  ].filter(Boolean).join(' · ');
+  return `<div class="vtask" data-vid="${t.id}">
+    <div class="vtask-head"><span class="vtask-spin"></span>${label}${pct}</div>
+    <div class="vtask-bar"><i></i></div>
+    <div class="vtask-meta">${meta}</div>
+    <div class="vtask-meta" style="opacity:.75">${esc(String(t.prompt || '').slice(0, 100))}</div>
+  </div>`;
+}
+
+function renderVs() {
+  const tasks = state.video.tasks;
+  const list = els.vsList;
+
+  els.vsCount.textContent = tasks.filter(t => t.kind === 'video').length;
+  const has = tasks.length > 0;
+  els.vsEmpty.hidden = has;
+  list.hidden = !has;
+  if (!has) { list.innerHTML = ''; _vsEls.clear(); return; }
+
+  tasks.forEach(t => {
+    const sig = vsCardSig(t);
+    let rec = _vsEls.get(t.id);
+    if (!rec || rec.sig !== sig || !rec.el.isConnected) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = vsCardHTML(t);
+      const el = tmp.firstElementChild;
+      if (rec && rec.el.isConnected) rec.el.replaceWith(el);
+      rec = { sig, el };
+      _vsEls.set(t.id, rec);
+    }
+    list.appendChild(rec.el);   // 复用同一节点 → 不会打断正在播放的视频
+  });
+
+  const alive = new Set(tasks.map(t => t.id));
+  Array.from(list.children).forEach(el => { if (!alive.has(el.dataset.vid)) el.remove(); });
+  Array.from(_vsEls.keys()).forEach(k => { if (!alive.has(k)) _vsEls.delete(k); });
+}
+
+async function vsDownload(task) {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  const ok = await downloadImage(task.src, `video-${stamp}.mp4`);
+  if (!ok) toast('直接下载被跨域拦截，已新窗口打开，请右键另存', 'warn', 4000);
+}
+
+function vsClearResults() {
+  if (state.video.running) { toast('正在生成中，先取消再清空', 'warn'); return; }
+  state.video.tasks = [];
+  _vsEls.clear();
+  renderVs();
+}
+
+/* ---------- 参考图（图生视频首帧） ---------- */
+function renderVsRef() {
+  const v = state.cfg.video;
+  const isI2V = v.mode === 'i2v';
+  els.vsRefBlock.hidden = !isI2V;
+  if (!isI2V) return;
+
+  const ref = state.video.ref;
+  const has = !!(ref && ref.dataUrl);
+  els.vsDrop.classList.toggle('hidden', has);
+  els.vsRefCard.hidden = !has;
+  if (!has) return;
+  els.vsRefThumb.src = ref.dataUrl;
+  els.vsRefName.textContent = ref.name || 'frame.png';
+  els.vsRefSize.textContent = `${ref.width}×${ref.height} · ${(ref.size / 1024).toFixed(0)} KB`;
+}
+
+async function vsHandleFile(file) {
+  try {
+    const ref = await readImageFile(file);
+    state.video.ref = ref;
+    renderVsRef();
+    toast(`首帧已载入 · ${ref.width}×${ref.height}`, 'ok', 2200);
+  } catch (e) {
+    toast('载入失败：' + (e.message || e), 'err', 3400);
+  }
+}
+
+function vsSetMode(mode) {
+  state.cfg.video.mode = mode === 'i2v' ? 'i2v' : 't2v';
+  persist.cfg();
+  $$('.vs-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.vmode === state.cfg.video.mode));
+  renderVsRef();
+}
+
+/* ---------- 接口配置 ---------- */
+function updateVsCustomSize() {
+  els.vsCustomSize.hidden = state.cfg.video.size !== '__custom__';
+}
+
+function updateVsPill(force) {
+  const v = state.cfg.video;
+  const pill = els.vsApiPill;
+  if (!pill) return;
+  if (force === 'on')  { pill.dataset.state = 'on';  pill.textContent = '已连接'; return; }
+  if (force === 'err') { pill.dataset.state = 'err'; pill.textContent = '连接异常'; return; }
+  if (!v.baseUrl) { pill.dataset.state = 'off'; pill.textContent = '接口未配置'; return; }
+  if (v.auth !== 'none' && !String(v.apiKey || '').trim()) {
+    pill.dataset.state = 'off'; pill.textContent = '缺少 API Key'; return;
+  }
+  pill.dataset.state = 'on';
+  pill.textContent = '已配置 · ' + (v.model || '未选模型');
+}
+
+const VS_KEYS = [
+  ['vsBaseUrl', 'baseUrl', 'text'],
+  ['vsApiKey', 'apiKey', 'text'],
+  ['vsModel', 'model', 'text'],
+  ['vsSubmitPath', 'submitPath', 'text'],
+  ['vsQueryPath', 'queryPath', 'text'],
+  ['vsFormat', 'format', 'text'],
+  ['vsAuth', 'auth', 'text'],
+  ['vsPollEvery', 'pollEvery', 'num'],
+  ['vsPollMax', 'pollMax', 'num'],
+  ['vsSize', 'size', 'text'],
+  ['vsSeconds', 'seconds', 'text'],
+  ['vsFps', 'fps', 'text'],
+  ['vsSeed', 'seed', 'text'],
+  ['vsNegative', 'negative', 'text'],
+  ['vsMapSize', 'mapSize', 'text'],
+  ['vsMapDuration', 'mapDuration', 'text'],
+  ['vsMapImage', 'mapImage', 'text'],
+  ['vsMapNegative', 'mapNegative', 'text'],
+  ['vsExtraJson', 'extraJson', 'text'],
+  ['vsW', 'customW', 'num'],
+  ['vsH', 'customH', 'num'],
+];
+const VS_BOOLS = [['vsDebug', 'debug']];
+
+function vsSettingsToUI() {
+  const v = state.cfg.video;
+  VS_KEYS.forEach(([elId, key, kind]) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    const val = v[key];
+    el.value = (val == null) ? '' : val;
+    if (kind === 'num' && el.value === '') el.value = '';
+  });
+  VS_BOOLS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (el) el.checked = !!v[key];
+  });
+  $$('.vs-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.vmode === v.mode));
+  if (els.vsPrompt) els.vsPrompt.value = v.prompt || '';
+  updateVsCustomSize();
+  renderVsRef();
+  updateVsPill();
+}
+
+/* 一键把画图接口的地址与 Key 搬过来 */
+function vsReuseImageApi() {
+  const c = state.cfg, v = c.video;
+  let n = 0;
+  if (String(c.baseUrl || '').trim()) { v.baseUrl = c.baseUrl; n++; }
+  if (String(c.apiKey || '').trim()) { v.apiKey = c.apiKey; n++; }
+  if (!n) { toast('画图接口还没填，先填那边再复制过来', 'warn', 3400); return; }
+  persist.cfg();
+  vsSettingsToUI();
+  toast(`已从画图接口复制 ${n} 项配置`, 'ok', 2400);
+}
+
+/* 反向：把视频接口配置同步回画图 */
+function vsSyncToImageApi() {
+  const c = state.cfg, v = c.video;
+  if (!String(v.baseUrl || '').trim()) { toast('视频接口地址还是空的', 'warn'); return; }
+  c.baseUrl = v.baseUrl;
+  if (String(v.apiKey || '').trim()) c.apiKey = v.apiKey;
+  persist.cfg();
+  settingsToUI();
+  toast('已同步给画图接口', 'ok', 2400);
+}
+
+function vsExtractModels(data) {
+  const arr = (data && (data.data || data.models || data.result)) || (Array.isArray(data) ? data : []);
+  if (!Array.isArray(arr)) return [];
+  return arr.map(m => (typeof m === 'string' ? m : (m && (m.id || m.name || m.model)))).filter(Boolean);
+}
+
+async function vsTestConn() {
+  const out = els.vsTestResult;
+  const base = vsBase();
+  if (!base) { out.className = 'test-result err'; out.textContent = '请先填写接口地址'; return; }
+  out.className = 'test-result';
+  out.textContent = '正在探测…';
+  const url = /\/models$/.test(base) ? base : base + '/models';
+  try {
+    const res = await vsFetch(url, { method: 'GET', headers: vsHeaders(false) }, 30000);
+    if (res.ok) {
+      const list = vsExtractModels(res.data);
+      out.className = 'test-result ok';
+      out.textContent = list.length
+        ? `连接成功 · 发现 ${list.length} 个模型（点「获取模型」可拉取）`
+        : '连接成功 ✓';
+      updateVsPill('on');
+    } else {
+      out.className = 'test-result err';
+      out.textContent = `接口可达，但 /models 返回 HTTP ${res.status}：${vsErrMsg(res.data, res.text).slice(0, 160)}`;
+    }
+  } catch (e) {
+    out.className = 'test-result err';
+    out.textContent = '连接失败：' + (e.name === 'AbortError' ? '超时' : (e.message || e)) +
+      '（部分服务商不提供 /models，可忽略此项直接试生成）';
+  }
+}
+
+async function vsFetchModels() {
+  const base = vsBase();
+  if (!base) { toast('请先填写视频接口地址', 'warn'); return; }
+  const btn = els.vsFetchModelsBtn;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '拉取中…';
+  try {
+    const url = /\/models$/.test(base) ? base : base + '/models';
+    const res = await vsFetch(url, { method: 'GET', headers: vsHeaders(false) }, 30000);
+    if (!res.ok) throw new Error(`HTTP ${res.status} · ${vsErrMsg(res.data, res.text).slice(0, 160)}`);
+    const models = vsExtractModels(res.data);
+    if (!models.length) throw new Error('返回里没有模型列表');
+    $('#vsModelPresets').innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
+    els.vsModelHint.textContent = `已获取 ${models.length} 个模型，点输入框可下拉选择`;
+    toast(`已获取 ${models.length} 个模型`, 'ok', 2600);
+  } catch (e) {
+    toast('获取失败：' + (e.message || e), 'err', 3800);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
+/* ---------- 开关与事件 ---------- */
+function openVideo() {
+  closeMoreMenu();
+  closeDrawers();
+  els.vstudio.hidden = false;
+  vsSettingsToUI();
+  renderVs();
+}
+
+function closeVideo() {
+  els.vstudio.hidden = true;
+}
+
+function bindVideoEvents() {
+  $('#btnVideo').addEventListener('click', openVideo);
+  els.vsClose.addEventListener('click', closeVideo);
+  els.vstudio.addEventListener('click', e => { if (e.target === els.vstudio) closeVideo(); });
+
+  /* 模式切换 */
+  els.vsMode.addEventListener('click', e => {
+    const b = e.target.closest('[data-vmode]');
+    if (b) vsSetMode(b.dataset.vmode);
+  });
+
+  /* 首帧图 */
+  els.vsDrop.addEventListener('click', () => els.vsFile.click());
+  els.vsFile.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) vsHandleFile(f);
+    e.target.value = '';
+  });
+  ['dragenter', 'dragover'].forEach(ev => els.vsDrop.addEventListener(ev, e => {
+    e.preventDefault(); els.vsDrop.classList.add('over');
+  }));
+  ['dragleave', 'drop'].forEach(ev => els.vsDrop.addEventListener(ev, e => {
+    e.preventDefault(); els.vsDrop.classList.remove('over');
+  }));
+  els.vsDrop.addEventListener('drop', e => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) vsHandleFile(f);
+  });
+  $('#vsRefRemove').addEventListener('click', () => {
+    state.video.ref = null;
+    if (els.vsFile) els.vsFile.value = '';
+    renderVsRef();
+  });
+
+  /* 提示词 */
+  els.vsPrompt.addEventListener('input', debounce(() => {
+    state.cfg.video.prompt = els.vsPrompt.value;
+    persist.cfg();
+  }, 400));
+  els.vsPrompt.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); onVsGenerateClick(); }
+  });
+  $('#vsPullPrompt').addEventListener('click', () => {
+    const t = els.promptBox.value.trim();
+    if (!t) { toast('主对话框还是空的', 'warn'); return; }
+    els.vsPrompt.value = t;
+    state.cfg.video.prompt = t;
+    persist.cfg();
+    toast('已取用主对话框的提示词', 'ok', 2000);
+  });
+
+  /* 生成 */
+  els.vsGenerate.addEventListener('click', onVsGenerateClick);
+  $('#vsClearAll').addEventListener('click', vsClearResults);
+
+  /* 结果卡片操作 */
+  els.vsList.addEventListener('click', e => {
+    const btn = e.target.closest('[data-vact]');
+    if (!btn) return;
+    const t = state.video.tasks.find(x => x.id === btn.dataset.vid);
+    if (!t) return;
+    if (btn.dataset.vact === 'copy') {
+      copyText(t.prompt).then(() => toast('提示词已复制', 'ok')).catch(() => toast('复制失败', 'err'));
+    } else if (btn.dataset.vact === 'download') {
+      vsDownload(t);
+    }
+  });
+
+  /* 配置项 */
+  VS_KEYS.forEach(([elId, key, kind]) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    const sync = () => {
+      state.cfg.video[key] = kind === 'num' ? Number(el.value) : el.value;
+      persist.cfg();
+      if (elId === 'vsSize') updateVsCustomSize();
+      updateVsPill();
+    };
+    el.addEventListener('input', sync);
+    el.addEventListener('change', sync);
+  });
+  VS_BOOLS.forEach(([elId, key]) => {
+    const el = $('#' + elId);
+    if (!el) return;
+    el.addEventListener('change', () => { state.cfg.video[key] = el.checked; persist.cfg(); });
+  });
+
+  $('#vsReuseImg').addEventListener('click', vsReuseImageApi);
+  $('#vsSyncBack').addEventListener('click', vsSyncToImageApi);
+  $('#vsTest').addEventListener('click', vsTestConn);
+  els.vsFetchModelsBtn.addEventListener('click', vsFetchModels);
+}
+
 /* ---------------- 主题 / 抽屉 ---------------- */
 function applyTheme(t) {
   state.ui.theme = t;
@@ -2864,6 +3725,33 @@ function init() {
   els.charCount = $('#charCount');
   els.tokenEst = $('#tokenEst');
 
+  /* 视频工作台 */
+  els.vstudio = $('#vstudio');
+  els.vsClose = $('#vsClose');
+  els.vsApiPill = $('#vsApiPill');
+  els.vsMode = $('#vsMode');
+  els.vsRefBlock = $('#vsRefBlock');
+  els.vsDrop = $('#vsDrop');
+  els.vsFile = $('#vsFile');
+  els.vsRefCard = $('#vsRefCard');
+  els.vsRefThumb = $('#vsRefThumb');
+  els.vsRefName = $('#vsRefName');
+  els.vsRefSize = $('#vsRefSize');
+  els.vsPrompt = $('#vsPrompt');
+  els.vsCustomSize = $('#vsCustomSize');
+  els.vsList = $('#vsList');
+  els.vsEmpty = $('#vsEmpty');
+  els.vsCount = $('#vsCount');
+  els.vsProgress = $('#vsProgress');
+  els.vsGenerate = $('#vsGenerate');
+  els.vsInput = $('.vs-input');
+  els.vsAccCfg = $('#vsAccCfg');
+  els.vsAccAdv = $('#vsAccAdv');
+  els.vsTestResult = $('#vsTestResult');
+  els.vsDebugPre = $('#vsDebugPre');
+  els.vsModelHint = $('#vsModelHint');
+  els.vsFetchModelsBtn = $('#vsFetchModels');
+
   loadAll();
   applyTheme(state.ui.theme);
   els.libSort.value = state.ui.sort;
@@ -2871,6 +3759,8 @@ function init() {
   settingsToUI();
   bindSettings();
   bindEvents();
+  bindVideoEvents();
+  vsSettingsToUI();
 
   renderLib();
   renderSizeGrid();
