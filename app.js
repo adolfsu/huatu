@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.7.1';
+const APP_VERSION = '1.7.2';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -282,7 +282,7 @@ function defaultCfg() {
     },
     gh: {
       owner: '', repo: '', branch: 'main', path: 'prompts.json',
-      token: '', autoSync: true, publicRead: false, lastSync: 0,
+      token: '', autoSync: true, autoPull: false, publicRead: false, lastSync: 0,
     },
   };
 }
@@ -1372,8 +1372,8 @@ async function ghPull(silent) {
     state.cfg.gh.lastSync = Date.now();
     persist.cfg();
     setSync('on', `已同步 · ${fmtTime(Date.now())}`);
-    if (!silent) toast(`云端同步完成 · 新增 ${merged.added} 条`, 'ok');
-    return true;
+    if (!silent) toast(`云端同步完成 · ${mergeSummary(merged)}`, 'ok', 3400);
+    return merged;
   } catch (e) {
     setSync('err', '同步失败');
     if (!silent) toast('拉取失败：' + (e.message || e), 'err', 4000);
@@ -1384,20 +1384,22 @@ async function ghPull(silent) {
 }
 
 function mergeLibraries(local, remote) {
-  let added = 0;
+  let added = 0, dups = 0, newGroups = 0;
   const byName = new Map(local.map(g => [g.name.trim().toLowerCase(), g]));
-  remote.forEach(rg => {
+  (remote || []).forEach(rg => {
     const key = String(rg.name || '').trim().toLowerCase();
     let target = byName.get(key);
     if (!target) {
       target = { id: uid(), name: rg.name || '未命名分组', color: rg.color || GROUP_COLORS[0], collapsed: false, items: [] };
       local.push(target);
       byName.set(key, target);
+      newGroups++;
     }
     const seen = new Set(target.items.map(i => i.text.trim().toLowerCase()));
     (rg.items || []).forEach(ri => {
       const t = String(ri.text || '').trim();
-      if (!t || seen.has(t.toLowerCase())) return;
+      if (!t) return;
+      if (seen.has(t.toLowerCase())) { dups++; return; }
       seen.add(t.toLowerCase());
       target.items.push({
         id: uid(), text: t,
@@ -1407,7 +1409,16 @@ function mergeLibraries(local, remote) {
       added++;
     });
   });
-  return { lib: local, added };
+  return { lib: local, added, dups, newGroups };
+}
+
+/* 差异摘要：把一次合并的结果说成人话（供启动自动拉取提示） */
+function mergeSummary(r) {
+  if (!r) return '云端暂无新内容';
+  const bits = [];
+  if (r.added) bits.push(`新增 ${r.added} 条${r.newGroups ? `（含 ${r.newGroups} 个新分组）` : ''}`);
+  if (r.dups) bits.push(`跳过重复 ${r.dups} 条`);
+  return bits.length ? bits.join(' · ') : '与云端一致，无变化';
 }
 
 async function ghPush(silent) {
@@ -1456,6 +1467,118 @@ async function ghPush(silent) {
     if (!silent) toast('上传失败：' + (e.message || e), 'err', 4500);
     els.ghResult.className = 'test-result err';
     els.ghResult.textContent = e.message || String(e);
+    return false;
+  }
+}
+
+/* 测试连接：分步校验，逐步报结果，让「填错的是哪一项」一目了然
+   步骤 1 Token 有效性 → 步骤 2 仓库可达与写权限 → 步骤 3 路径可读与云端条目数
+   注意：全程只读，不做任何写入探测，避免污染仓库 */
+async function ghTestConn() {
+  const g = state.cfg.gh;
+  const out = els.ghResult;
+  const lines = [];
+  const draw = (cls) => {
+    out.className = 'test-result ' + (cls || 'busy');
+    out.innerHTML = lines.join('<br>');
+  };
+
+  if (!g.owner || !g.repo) {
+    out.className = 'test-result err';
+    out.textContent = '✗ 请先填写仓库 Owner 与 Repo';
+    toast('请先填写 Owner 与 Repo', 'warn');
+    return false;
+  }
+  if (!g.token && !g.publicRead) {
+    out.className = 'test-result err';
+    out.textContent = '✗ 私有仓库必须填 Token；公开仓库请勾选「公开仓库（跳过 token）」';
+    toast('未填 Token 且未开启只读模式', 'warn', 3200);
+    return false;
+  }
+
+  const t0 = Date.now();
+  const branch = g.branch || 'main';
+  lines.push(`<b>开始检测</b> · ${esc(g.owner)}/${esc(g.repo)} @ ${esc(branch)} → ${esc(g.path || 'prompts.json')}`);
+  draw();
+
+  /* 步骤 1：Token 是否有效 */
+  if (!g.token) {
+    lines.push('· 只读模式：未填 Token，跳过身份校验');
+    draw();
+  } else {
+    try {
+      const r = await fetch('https://api.github.com/user', { headers: ghHeaders() });
+      if (!r.ok) {
+        const t = await r.text();
+        const why = r.status === 401 ? 'Token 无效或已过期'
+                  : r.status === 403 ? 'Token 被限制或触发限流'
+                  : `HTTP ${r.status}`;
+        lines.push(`✗ <b>Token 校验失败</b> · ${esc(why)}`);
+        lines.push(`<span class="tr-dim">${esc(String(t).slice(0, 160))}</span>`);
+        draw('err');
+        toast('Token 校验失败：' + why, 'err', 4200);
+        return false;
+      }
+      const me = await r.json();
+      lines.push(`✓ Token 有效 · 身份 <b>${esc(me.login || '?')}</b>`);
+      draw();
+    } catch (e) {
+      lines.push(`✗ <b>Token 校验失败</b> · ${esc(e.message || String(e))}`);
+      draw('err');
+      return false;
+    }
+  }
+
+  /* 步骤 2：仓库是否可达（顺带校验 Owner/Repo 拼写与写权限） */
+  let repoInfo = null;
+  try {
+    const r = await fetch(ghApi(''), { headers: ghHeaders() });
+    if (!r.ok) {
+      const why = r.status === 404 ? '仓库不存在，或 Token 没有该仓库的权限'
+                : r.status === 401 ? '认证失败'
+                : r.status === 403 ? '访问被拒绝（可能是限流或权限不足）'
+                : `HTTP ${r.status}`;
+      lines.push(`✗ <b>仓库不可达</b> · ${esc(why)}`);
+      draw('err');
+      toast('仓库不可达：' + why, 'err', 4500);
+      return false;
+    }
+    repoInfo = await r.json();
+    const perm = repoInfo.permissions || {};
+    const canWrite = !!perm.push;
+    lines.push(`✓ 仓库可达 · ${repoInfo.private ? '私有' : '公开'}仓库 · 默认分支 <b>${esc(repoInfo.default_branch || 'main')}</b>` +
+               ` · 写权限 ${canWrite ? '<b>已具备</b>' : '未确认（只读）'}`);
+    draw();
+  } catch (e) {
+    lines.push(`✗ <b>仓库不可达</b> · ${esc(e.message || String(e))}`);
+    draw('err');
+    return false;
+  }
+
+  if (branch !== (repoInfo.default_branch || 'main')) {
+    lines.push(`· 注意：你填的分支「${esc(branch)}」与仓库默认分支「${esc(repoInfo.default_branch || 'main')}」不同，确认这是你要同步的分支`);
+    draw();
+  }
+
+  /* 步骤 3：路径能否读取、云端有多少数据 */
+  try {
+    const { json } = await ghGetFile();
+    if (!json) {
+      lines.push(`✓ 路径可读 · 云端还没有 <b>${esc(g.path || 'prompts.json')}</b>，首次「上传到云端」时创建`);
+    } else {
+      const groups = Array.isArray(json.groups) ? json.groups : [];
+      const items = groups.reduce((n, x) => n + ((x.items || []).length), 0);
+      const when = json.exportedAt ? new Date(json.exportedAt).toLocaleString('zh-CN') : '未知时间';
+      lines.push(`✓ 路径可读 · 云端已有 <b>${groups.length} 组 / ${items} 条</b>词（导出时间 ${esc(when)}）`);
+    }
+    lines.push(`<span class="tr-dim">检测通过，共耗时 ${Date.now() - t0} ms</span>`);
+    draw('ok');
+    toast('连接正常 ✓', 'ok');
+    return true;
+  } catch (e) {
+    lines.push(`✗ <b>路径读取失败</b> · ${esc(e.message || String(e))}`);
+    draw('err');
+    toast('路径读取失败，请检查「文件路径」与分支', 'err', 4200);
     return false;
   }
 }
@@ -1553,7 +1676,7 @@ const GH_KEYS = [
   ['ghOwner', 'owner'], ['ghRepo', 'repo'], ['ghBranch', 'branch'],
   ['ghPath', 'path'], ['ghToken', 'token'],
 ];
-const GH_BOOLS = [['chkAutoSync', 'autoSync'], ['chkSyncPrompt', 'publicRead']];
+const GH_BOOLS = [['chkAutoSync', 'autoSync'], ['chkAutoPull', 'autoPull'], ['chkSyncPrompt', 'publicRead']];
 
 function bindSettings() {
   CFG_KEYS.forEach(([elId, key, kind]) => {
@@ -2237,6 +2360,7 @@ function bindEvents() {
   /* --- 云同步 --- */
   $('#btnGhPush').addEventListener('click', () => ghPush(false));
   $('#btnGhPull').addEventListener('click', () => ghPull(false));
+  $('#btnGhTest').addEventListener('click', () => ghTestConn());
 
   /* --- 数据 --- */
   $('#btnExport').addEventListener('click', exportJson);
@@ -4143,10 +4267,17 @@ function init() {
     }
   }
 
-  // 启动时尝试静默拉取云端
-  if (ghReady(false) && (state.cfg.gh.token || state.cfg.gh.publicRead)) {
+  // 启动时按开关自动拉取云端并合并（默认关，避免多设备静默分叉）
+  if (state.cfg.gh.autoPull && ghReady(false) && (state.cfg.gh.token || state.cfg.gh.publicRead)) {
     setSync('busy', '正在同步…');
-    setTimeout(() => ghPull(true), 800);
+    setTimeout(async () => {
+      const r = await ghPull(true);
+      if (r) {
+        if (r.added > 0) toast(`云端合并：${mergeSummary(r)}`, 'ok', 4200);
+      } else {
+        updateSyncPill();
+      }
+    }, 800);
   }
 }
 

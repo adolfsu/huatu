@@ -1761,3 +1761,6 @@ code {
   backdrop-filter: blur(2px);
 }
 .hist-badge.full { background: rgba(91,91,214,.92); }
+
+/* 云同步「测试连接」结果内的次要说明文字 */
+.test-result .tr-dim { color: var(--text-3); opacity: .85; font-size: 11px; }

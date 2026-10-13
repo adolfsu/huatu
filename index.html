@@ -508,13 +508,18 @@
           <div class="field-row">
             <button class="btn tiny primary" id="btnGhPush">上传到云端</button>
             <button class="btn tiny ghost" id="btnGhPull">从云端拉取</button>
+            <button class="btn tiny ghost" id="btnGhTest" title="分步校验 Token / 仓库 / 路径是否配置正确">🔌 测试连接</button>
           </div>
           <div class="field-row">
             <label class="inline-check"><input type="checkbox" id="chkAutoSync" checked><span>修改后自动上传</span></label>
           </div>
+          <div class="field-row">
+            <label class="inline-check"><input type="checkbox" id="chkAutoPull"><span>启动时自动拉取合并</span></label>
+          </div>
           <div class="field">
             <label class="inline-check"><input type="checkbox" id="chkSyncPrompt"><span>公开仓库（跳过 token，仅只读拉取）</span></label>
           </div>
+          <small class="block">「启动时自动拉取」打开后，每次打开页面会与云端<strong>合并</strong>一次（按分组名与提示词去重，不覆盖本地），有新增时会提示差异摘要。默认关闭，避免两台设备同时改动造成静默分叉。</small>
           <div class="test-result" id="ghResult"></div>
         </div>
       </details>
