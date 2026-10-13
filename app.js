@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.7.1';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -1698,14 +1698,14 @@ function updateStoreStat() {
   const fullCnt = _histFull.size;
   const line = () => {
     els.storeStat.textContent =
-      `设置占用 ${kb} KB · 历史 ${state.history.length} 条（其中大图 ${fullCnt} 张，其余仅缩略图 + 提示词）` +
+      `设置占用 ${kb} KB · 历史 ${state.history.length} 条（大图 ${fullCnt} 张，其余仅缩略图 + 提示词；图片在顶部「历史记录」标签查看）` +
       ` · 提示词 ${state.lib.reduce((n, g) => n + g.items.length, 0)} 条` + (els.storeStat.dataset.extra || '');
   };
   line();
   // 图片库体积（IndexedDB）异步补充
   if (navigator.storage && navigator.storage.estimate) {
     navigator.storage.estimate().then(est => {
-      els.storeStat.dataset.extra = ` · 图片库约 ${((est.usage || 0) / 1048576).toFixed(1)} MB`;
+      els.storeStat.dataset.extra = ` · 历史图片共约 ${((est.usage || 0) / 1048576).toFixed(1)} MB`;
       line();
     }).catch(() => {});
   }
@@ -2288,6 +2288,10 @@ function bindEvents() {
       toast(`已合并 · 新增 ${r.added} 条`, 'ok');
     }
     closeModal();
+  });
+  $('#btnOpenHist').addEventListener('click', () => {
+    $('#modalClose')?.click();
+    document.querySelector('[data-tab="history"]')?.click();
   });
   $('#btnWipeGen').addEventListener('click', async () => {
     await histDeleteAll();
@@ -4091,7 +4095,7 @@ function init() {
   (async () => {
     try {
       const n = await histMigrateLS();
-      if (n) toast(`已把 ${n} 条旧历史迁移到图片库`, '', 2800);
+      if (n) toast(`已把 ${n} 条旧历史迁移到「历史记录」`, '', 2800);
       await reloadHistory();
     } catch (e) { state.history = []; }
     renderHistory();
