@@ -1725,3 +1725,11 @@ code {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* 版本徽章（弹窗底部） */
+.ver-badge {
+  margin-top: 14px; padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px; color: var(--text-3); text-align: right;
+  user-select: none;
+}

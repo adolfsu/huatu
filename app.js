@@ -19,6 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
+const APP_VERSION = '1.6.1';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -914,17 +915,24 @@ async function generate() {
   try {
     let result = await postImages(endpoint, headers, payload);
 
-    // 智能降级：400/422 且报错点名了参数 → 摘掉后重试一次
+    // 智能降级：400/422 且报错点名了参数 → 摘掉后重试一次；类型不符 → 纠正后重试一次
     if (!result.ok) {
       const firstMsg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) || result.text || '';
       const stripKeys = pickParamsToStrip(result.status, firstMsg, payload);
+      let retryPayload = null, note = '';
       if (stripKeys.length) {
-        const retryPayload = Object.assign({}, payload);
+        retryPayload = Object.assign({}, payload);
         stripKeys.forEach(k => delete retryPayload[k]);
+        note = `接口不认参数 ${stripKeys.join('/')}，已自动去掉重试`;
+      } else {
+        const coerced = vsCoercePayload(payload, firstMsg);
+        if (coerced) { retryPayload = coerced; note = '接口要求字段类型不同，已自动纠正重试'; }
+      }
+      if (retryPayload) {
         if (state.cfg.debug) {
-          els.debugPre.textContent += `\n\n── 参数被拒（${stripKeys.join(', ')}），降级重试 ──\n` + JSON.stringify(retryPayload, null, 2);
+          els.debugPre.textContent += `\n\n── 降级重试 ──\n` + JSON.stringify(retryPayload, null, 2);
         }
-        toast(`接口不认参数 ${stripKeys.join('/')}，已自动去掉重试`, 'warn', 3000);
+        toast(note, 'warn', 3000);
         result = await postImages(endpoint, headers, retryPayload);
       }
     }
@@ -1500,7 +1508,7 @@ function markSizeActive() {
    ============================================================ */
 function openModal(title, html) {
   els.modalTitle.textContent = title;
-  els.modalBody.innerHTML = html;
+  els.modalBody.innerHTML = html + `<div class="ver-badge">Prompt Painter v${APP_VERSION}</div>`;
   els.modal.hidden = false;
 }
 function closeModal() { els.modal.hidden = true; }
@@ -3033,8 +3041,8 @@ function vsBuildPayload(prompt) {
 
   if (v.seconds !== '' && v.seconds != null) {
     const df = (v.mapDuration || 'seconds').trim() || 'seconds';
-    const n = Number(v.seconds);
-    body[df] = isFinite(n) && String(v.seconds).trim() !== '' ? n : v.seconds;
+    const s = String(v.seconds).trim();
+    if (s !== '') body[df] = s;   // 默认发字符串（Sora/多数 Go 后端要 string），类型不符时由 400 重试兜底
   }
 
   if (v.fps !== '' && v.fps != null) body.fps = Number(v.fps);
@@ -3076,6 +3084,21 @@ function vsBuildFormData(payload) {
     fd.append(k, typeof val === 'object' ? JSON.stringify(val) : String(val));
   });
   return fd;
+}
+
+/* 400 且报错点名「某字段类型不对」时，翻转该字段类型后重试 */
+function vsCoercePayload(payload, msg) {
+  const m = /struct field\s+[\w.]*?\.?(\w+)\s+of type\s+(\w+)/i.exec(msg || '');
+  if (!m) return null;
+  const field = m[1], want = m[2].toLowerCase();
+  if (!(field in payload) || field === 'prompt' || field === 'model') return null;
+  const cur = payload[field];
+  const out = Object.assign({}, payload);
+  if (want === 'string' && typeof cur === 'number') out[field] = String(cur);
+  else if (want === 'number' && typeof cur === 'string' && String(cur).trim() !== '' && isFinite(Number(cur))) out[field] = Number(cur);
+  else if (want === 'boolean') out[field] = (cur === true || cur === 'true');
+  else return null;
+  return out;
 }
 
 /* ---------- 主流程 ---------- */
@@ -3145,12 +3168,24 @@ async function vsGenerate() {
   renderVs();
 
   try {
-    const body = v.format === 'multipart'
-      ? vsBuildFormData(payload)
-      : JSON.stringify(payload);
     const headers = vsHeaders(v.format !== 'multipart');
+    const submitOnce = (pl) => vsFetch(url, {
+      method: 'POST', headers,
+      body: v.format === 'multipart' ? vsBuildFormData(pl) : JSON.stringify(pl),
+    }, 180000);
 
-    const res = await vsFetch(url, { method: 'POST', headers, body }, 180000);
+    let res = await submitOnce(payload);
+    if (!res.ok && res.status === 400) {
+      /* 服务商嫌字段类型不对（如 seconds 要 string 发了 number）→ 纠正后重试一次 */
+      const alt = vsCoercePayload(payload, vsErrMsg(res.data, res.text));
+      if (alt) {
+        if (v.debug) {
+          els.vsDebugPre.textContent += `\n\n-- 400 类型纠正重试 --\n` + JSON.stringify(alt, null, 2);
+        }
+        const res2 = await submitOnce(alt);
+        if (res2.ok) res = res2;
+      }
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status} · ${vsErrMsg(res.data, res.text)}`);
 
     /* 形态一：直接给了视频地址 */
