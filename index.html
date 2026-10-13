@@ -89,8 +89,22 @@
       </div>
       <div class="stage-head-actions">
         <span class="combo-info" id="comboInfo"></span>
+        <button class="btn tiny ghost" id="btnMatrix" title="矩阵组合批量出图">⧉ 组合出图</button>
+        <button class="btn tiny ghost" id="btnDownloadMode" title="批量选择并下载">⤓ 批量下载</button>
         <button class="btn tiny ghost" id="btnClearPrompt">清空对话框</button>
       </div>
+    </div>
+
+    <!-- 下载选择工具条 -->
+    <div class="dl-bar hidden" id="dlBar">
+      <span class="dl-bar-title">批量下载</span>
+      <span class="dl-bar-info" id="dlInfo">已选 0 张</span>
+      <span class="grow"></span>
+      <button class="link-btn" id="dlSelectAll">全选</button>
+      <button class="link-btn" id="dlInvert">反选</button>
+      <button class="link-btn" id="dlSelectNone">全不选</button>
+      <button class="btn tiny primary" id="dlConfirm">下载所选</button>
+      <button class="btn tiny ghost" id="dlExit">退出</button>
     </div>
 
     <!-- 结果区 -->
@@ -377,6 +391,74 @@
     </div>
   </aside>
 </main>
+
+<!-- 矩阵组合工作台 -->
+<div class="matrix" id="matrix" hidden>
+  <div class="matrix-box">
+    <div class="matrix-head">
+      <div class="matrix-title">
+        <b>⧉ 组合出图</b>
+        <small>A 组 × B 组，笛卡尔积批量生成</small>
+      </div>
+      <button class="icon-btn" id="matrixClose">✕</button>
+    </div>
+
+    <div class="matrix-body">
+      <div class="matrix-col" data-side="A">
+        <div class="matrix-col-head">
+          <span class="matrix-badge a">A</span>
+          <input type="text" class="matrix-col-name" id="nameA" value="主体 · 人物及服装">
+        </div>
+        <div class="matrix-col-hint">这一组用来锁定主体一致性</div>
+        <textarea class="matrix-ta" id="listA" rows="7" placeholder="每行一条，例如：&#10;young asian woman, white silk shirt, denim skirt&#10;young asian woman, black lace top, leather pants"></textarea>
+        <div class="matrix-from-lib">
+          <label class="inline-check"><input type="checkbox" id="useTextA" checked><span>与下方公共前缀组合</span></label>
+        </div>
+      </div>
+
+      <div class="matrix-mid">
+        <div class="matrix-x">×</div>
+        <div class="matrix-cnt" id="cntPreview">0 × 0 = 0</div>
+      </div>
+
+      <div class="matrix-col" data-side="B">
+        <div class="matrix-col-head">
+          <span class="matrix-badge b">B</span>
+          <input type="text" class="matrix-col-name" id="nameB" value="动作 · 姿势">
+        </div>
+        <div class="matrix-col-hint">这一组用来变化姿势与构图</div>
+        <textarea class="matrix-ta" id="listB" rows="7" placeholder="每行一条，例如：&#10;standing, hands on hips, looking at camera&#10;sitting on chair, legs crossed, side view"></textarea>
+        <div class="matrix-from-lib">
+          <label class="inline-check"><input type="checkbox" id="useLibB" checked><span>从词库「动作」类分组自动填充</span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="matrix-common">
+      <label>公共后缀（每条组合都会带上，如画质与光线）</label>
+      <textarea id="matrixCommon" rows="2" placeholder="masterpiece, best quality, soft window light" spellcheck="false"></textarea>
+      <div class="matrix-common-actions">
+        <button class="link-btn" id="matrixFillCommon">用当前对话框内容填入</button>
+        <button class="link-btn" id="matrixPickGroupB">从词库挑选 B 组</button>
+      </div>
+    </div>
+
+    <div class="matrix-preview">
+      <div class="matrix-preview-head">
+        <span>生成清单预览 <b id="matrixCount">0</b> 条</span>
+        <span class="matrix-per-hint" id="matrixBatchHint"></span>
+      </div>
+      <div class="matrix-list" id="matrixList"></div>
+    </div>
+
+    <div class="matrix-foot">
+      <label class="inline-check"><input type="checkbox" id="matrixAutoDownload"><span>生成完成后自动进入批量下载模式</span></label>
+      <span class="grow"></span>
+      <span class="matrix-progress" id="matrixProgress"></span>
+      <button class="btn primary" id="matrixRun">开始组合出图</button>
+    </div>
+  </div>
+</div>
 
 <!-- 移动端遮罩 -->
 <div class="scrim" id="scrim" hidden></div>

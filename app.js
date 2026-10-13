@@ -13,6 +13,7 @@ const LS = {
   theme:   'pp.theme.v1',
   ui:      'pp.ui.v1',
   seedVer: 'pp.seedver.v1',
+  dl:      'pp.dl.v1',
 };
 
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
@@ -197,9 +198,18 @@ const state = {
   lib: [],
   cfg: {},
   history: [],
-  ui: { theme: 'light', sort: 'manual', search: '', picked: [], chips: [] },
+  ui: {
+    theme: 'light', sort: 'manual', search: '', picked: [], chips: [],
+    results: [],
+    dlMode: false,        // 批量下载模式
+    dlPicked: [],         // 被勾选的图片 id
+  },
   undoStack: [],
   busy: false,
+  matrix: {             // 矩阵组合工作台
+    rows: [],           // [{ id, a, b, text, on }]
+    running: false,
+  },
 };
 
 function defaultCfg() {
@@ -618,7 +628,9 @@ function renderResults() {
         <div class="msg">${esc(r.message)}</div>
       </div>`;
     }
-    return `<div class="card-img" id="${r.id}">
+    const picked = state.ui.dlMode && state.ui.dlPicked.includes(r.id) ? 'picked' : '';
+    return `<div class="card-img ${picked} ${state.ui.dlMode ? 'dl-mode' : ''}" id="${r.id}">
+      ${state.ui.dlMode ? `<div class="pick-box" data-act="toggle-pick" data-id="${r.id}"></div>` : ''}
       <img src="${esc(r.src)}" alt="生成结果" loading="lazy" data-act="zoom" data-id="${r.id}">
       <div class="card-img-bar">
         <span class="txt" title="${esc(r.prompt)}">${esc(r.prompt)}</span>
@@ -641,13 +653,17 @@ function renderHistory() {
     return;
   }
   empty.classList.add('hidden');
-  grid.innerHTML = h.slice(0, 120).map(r => `<div class="hist-card" data-hid="${r.id}" data-act="open-hist">
-    <img src="${esc(r.src)}" alt="" loading="lazy">
-    <div class="hist-card-meta">
-      <div class="txt" title="${esc(r.prompt)}">${esc(r.prompt)}</div>
-      <div>${fmtTime(r.time)}</div>
-    </div>
-  </div>`).join('');
+  grid.innerHTML = h.slice(0, 120).map(r => {
+    const picked = state.ui.dlMode && state.ui.dlPicked.includes(r.id) ? 'picked' : '';
+    return `<div class="hist-card ${picked}" data-hid="${r.id}" data-act="open-hist">
+      ${state.ui.dlMode ? `<div class="pick-box" data-act="toggle-pick" data-id="${r.id}"></div>` : ''}
+      <img src="${esc(r.src)}" alt="" loading="lazy">
+      <div class="hist-card-meta">
+        <div class="txt" title="${esc(r.prompt)}">${esc(r.prompt)}</div>
+        <div>${fmtTime(r.time)}</div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function fmtTime(ts) {
@@ -1597,8 +1613,17 @@ function bindEvents() {
 
   /* --- 结果区 --- */
   els.tabResult.addEventListener('click', e => {
+    // 下载模式：勾选/取消
+    const pickBox = e.target.closest('[data-act="toggle-pick"]');
+    if (pickBox) { e.stopPropagation(); togglePick(pickBox.dataset.id); return; }
+
     const img = e.target.closest('img[data-act="zoom"]');
     if (img) {
+      if (state.ui.dlMode) {
+        const cardId = img.closest('.card-img')?.id;
+        if (cardId) togglePick(cardId);
+        return;
+      }
       const r = (state.ui.results || []).find(x => x.id === img.closest('[id]')?.id);
       openLightbox(img.src, r ? r.prompt : '');
       return;
@@ -1611,11 +1636,69 @@ function bindEvents() {
   });
 
   els.historyGrid.addEventListener('click', e => {
+    const pickBox = e.target.closest('[data-act="toggle-pick"]');
+    if (pickBox) { e.stopPropagation(); togglePick(pickBox.dataset.id); return; }
+
     const card = e.target.closest('[data-act="open-hist"]');
     if (!card) return;
+    if (state.ui.dlMode) { togglePick(card.dataset.hid); return; }
     const h = state.history.find(x => x.id === card.dataset.hid);
     if (h) openLightbox(h.src, h.prompt);
   });
+
+  /* --- 批量下载工具条 --- */
+  $('#btnDownloadMode').addEventListener('click', () => {
+    if (state.ui.dlMode) exitDownloadMode(); else enterDownloadMode();
+  });
+  $('#dlExit').addEventListener('click', exitDownloadMode);
+  $('#dlConfirm').addEventListener('click', downloadPicked);
+  $('#dlSelectAll').addEventListener('click', () => {
+    const imgs = (state.ui.results || []).filter(r => r.kind === 'img');
+    const src = imgs.length ? imgs : state.history;
+    state.ui.dlPicked = [...new Set(src.map(r => r.id))];
+    persistDL(); updateDlInfo(); renderResults(); renderHistory();
+  });
+  $('#dlSelectNone').addEventListener('click', () => {
+    state.ui.dlPicked = [];
+    persistDL(); updateDlInfo(); renderResults(); renderHistory();
+  });
+  $('#dlInvert').addEventListener('click', () => {
+    const imgs = (state.ui.results || []).filter(r => r.kind === 'img');
+    const src = imgs.length ? imgs : state.history;
+    const all = src.map(r => r.id);
+    const cur = new Set(state.ui.dlPicked);
+    state.ui.dlPicked = all.filter(id => !cur.has(id));
+    persistDL(); updateDlInfo(); renderResults(); renderHistory();
+  });
+
+  /* --- 矩阵组合 --- */
+  $('#btnMatrix').addEventListener('click', openMatrix);
+  $('#matrixClose').addEventListener('click', closeMatrix);
+  els.matrix.addEventListener('click', e => { if (e.target === els.matrix) closeMatrix(); });
+  [els.listA, els.listB].forEach(ta => ta.addEventListener('input', debounce(buildMatrixRows, 260)));
+  els.matrixCommon.addEventListener('input', debounce(buildMatrixRows, 260));
+  els.matrixList.addEventListener('click', e => {
+    const row = e.target.closest('.mx-row');
+    if (!row) return;
+    const r = state.matrix.rows.find(x => x.id === row.dataset.mxid);
+    if (!r) return;
+    r.on = !r.on;
+    row.classList.toggle('off', !r.on);
+    updateMatrixCount();
+  });
+  $('#matrixFillCommon').addEventListener('click', () => {
+    els.matrixCommon.value = els.promptBox.value.trim();
+    buildMatrixRows();
+    toast('已填入当前对话框内容', 'ok', 1600);
+  });
+  $('#matrixPickGroupB').addEventListener('click', () => {
+    const auto = guessActionPrompts();
+    if (!auto.length) { toast('词库里没找到「动作/姿势」类分组，请手动填写', 'warn'); return; }
+    els.listB.value = auto.join('\n');
+    buildMatrixRows();
+    toast(`已从词库填入 ${auto.length} 条`, 'ok', 1800);
+  });
+  els.matrixRun.addEventListener('click', runMatrix);
 
   /* --- Tab --- */
   $$('.tab').forEach(t => t.addEventListener('click', () => {
@@ -1639,8 +1722,10 @@ function bindEvents() {
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
+      if (!els.matrix.hidden) return closeMatrix();
       if (!els.lightbox.hidden) return closeLightbox();
       if (!els.modal.hidden) return closeModal();
+      if (state.ui.dlMode) return exitDownloadMode();
       if (els.panelLib.classList.contains('open') || els.panelParams.classList.contains('open')) return closeDrawers();
     }
     // Ctrl+K 聚焦搜索
@@ -1979,6 +2064,334 @@ function startRenameGroup(gid) {
   });
 }
 
+/* ============================================================
+   批量下载模式
+   ============================================================ */
+function enterDownloadMode() {
+  const imgs = (state.ui.results || []).filter(r => r.kind === 'img');
+  const histImgs = state.history;
+  if (!imgs.length && !histImgs.length) { toast('还没有可下载的图片', 'warn'); return; }
+  state.ui.dlMode = true;
+  // 默认全选当前结果；若结果为空则全选历史
+  state.ui.dlPicked = (imgs.length ? imgs : histImgs).map(r => r.id);
+  persistDL();
+  els.dlBar.classList.remove('hidden');
+  $('#btnDownloadMode').classList.add('active');
+  renderResults();
+  renderHistory();
+  updateDlInfo();
+  toast('已全选，点击图片可取消勾选', '', 2600);
+}
+
+function exitDownloadMode() {
+  state.ui.dlMode = false;
+  state.ui.dlPicked = [];
+  persistDL();
+  els.dlBar.classList.add('hidden');
+  $('#btnDownloadMode').classList.remove('active');
+  renderResults();
+  renderHistory();
+}
+
+function persistDL() {
+  store.write(LS.dl, { mode: state.ui.dlMode, picked: state.ui.dlPicked });
+}
+
+function updateDlInfo() {
+  const n = state.ui.dlPicked.length;
+  els.dlInfo.textContent = n ? `已选 ${n} 张` : '未选择';
+  $('#dlConfirm').disabled = n === 0;
+}
+
+function togglePick(id) {
+  const list = state.ui.dlPicked;
+  const i = list.indexOf(id);
+  if (i >= 0) list.splice(i, 1); else list.push(id);
+  persistDL();
+  updateDlInfo();
+  // 局部更新样式，避免整块重绘造成闪烁
+  $$(`[data-act="toggle-pick"][data-id="${CSS.escape(id)}"]`).forEach(box => {
+    box.closest('.card-img, .hist-card')?.classList.toggle('picked', list.includes(id));
+  });
+}
+
+/* 收集所有可选图片（结果 + 历史），按 id 去重 */
+function collectAllImages() {
+  const map = new Map();
+  (state.ui.results || []).forEach(r => { if (r.kind === 'img') map.set(r.id, r); });
+  state.history.forEach(r => { if (!map.has(r.id)) map.set(r.id, r); });
+  return map;
+}
+
+/* 下载一张图片为文件。跨域图片走 fetch→blob，失败则退回新窗口打开 */
+async function downloadImage(src, filename) {
+  // data: 协议直接下载
+  if (/^data:/.test(src)) {
+    const a = document.createElement('a');
+    a.href = src; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    return true;
+  }
+  try {
+    const res = await fetch(src, { mode: 'cors' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return true;
+  } catch (e) {
+    // 跨域受限时退化为新标签打开，用户可手动另存
+    window.open(src, '_blank', 'noopener');
+    return false;
+  }
+}
+
+async function downloadPicked() {
+  const picked = state.ui.dlPicked;
+  if (!picked.length) { toast('先勾选要下载的图片', 'warn'); return; }
+
+  const map = collectAllImages();
+  const items = picked.map(id => map.get(id)).filter(Boolean);
+  if (!items.length) { toast('勾选的图片已不在列表中', 'warn'); return; }
+
+  const btn = $('#dlConfirm');
+  btn.disabled = true;
+  let okCnt = 0, fallbackCnt = 0;
+  for (let i = 0; i < items.length; i++) {
+    btn.textContent = `下载中 ${i + 1}/${items.length}`;
+    const it = items[i];
+    const stamp = fmtFileStamp(it.time || Date.now());
+    const name = `painting-${stamp}-${String(i + 1).padStart(2, '0')}.png`;
+    // eslint-disable-next-line no-await-in-loop
+    const ok = await downloadImage(it.src, name);
+    if (ok) okCnt++; else fallbackCnt++;
+    await new Promise(r => setTimeout(r, 320)); // 避免浏览器拦截连续下载
+  }
+  btn.textContent = '下载所选';
+  btn.disabled = false;
+
+  if (fallbackCnt) {
+    toast(`已下载 ${okCnt} 张，${fallbackCnt} 张因跨域限制改为新标签打开`, 'warn', 3600);
+  } else {
+    toast(`已下载 ${okCnt} 张图片`, 'ok');
+  }
+}
+
+function fmtFileStamp(ts) {
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/* ============================================================
+   矩阵组合出图
+   ============================================================ */
+function openMatrix() {
+  els.matrix.hidden = false;
+  // 首次打开：用当前对话框内容作为公共后缀，B 组从词库的动作类分组预填
+  if (!els.matrixCommon.value.trim()) els.matrixCommon.value = els.promptBox.value.trim();
+  if (!els.listB.value.trim()) {
+    const auto = guessActionPrompts();
+    if (auto.length) els.listB.value = auto.join('\n');
+  }
+  buildMatrixRows();
+  setTimeout(() => els.listA.focus(), 80);
+}
+
+function closeMatrix() {
+  els.matrix.hidden = true;
+}
+
+/* 从词库里猜「动作/姿势」类分组的提示词 */
+function guessActionPrompts() {
+  const kw = /动作|姿势|pose|action|姿态|构图/;
+  const out = [];
+  state.lib.forEach(g => {
+    if (kw.test(g.name)) g.items.forEach(it => out.push(it.text));
+  });
+  return out.slice(0, 8);
+}
+
+function parseLines(text) {
+  return String(text || '')
+    .split('\n')
+    .map(s => normalizePrompt(s))
+    .filter(Boolean);
+}
+
+/* 根据 A/B 两组 + 公共后缀，构建笛卡尔积行 */
+function buildMatrixRows() {
+  const aList = parseLines(els.listA.value);
+  const bList = parseLines(els.listB.value);
+  const common = normalizePrompt(els.matrixCommon.value);
+  const prevOn = new Map(state.matrix.rows.map(r => [r.id, r.on]));
+
+  const rows = [];
+  const combos = [];
+  if (aList.length && bList.length) {
+    aList.forEach(a => bList.forEach(b => combos.push({ a, b })));
+  } else if (aList.length) {
+    aList.forEach(a => combos.push({ a, b: '' }));
+  } else if (bList.length) {
+    bList.forEach(b => combos.push({ a: '', b }));
+  }
+
+  combos.forEach((c, idx) => {
+    const parts = [c.a, c.b, common].filter(Boolean);
+    const text = normalizePrompt(parts.join(', '));
+    const id = 'mx-' + idx + '-' + (c.a.slice(0, 6) + '|' + c.b.slice(0, 6));
+    rows.push({ id, a: c.a, b: c.b, text, on: prevOn.has(id) ? prevOn.get(id) : true });
+  });
+
+  state.matrix.rows = rows;
+  renderMatrixList();
+  updateMatrixCount();
+}
+
+function renderMatrixList() {
+  const list = els.matrixList;
+  const rows = state.matrix.rows;
+  if (!rows.length) {
+    list.innerHTML = `<div class="matrix-empty">在 A 组和 B 组各写至少一条（每行一条），这里会列出所有组合</div>`;
+    return;
+  }
+  list.innerHTML = rows.map((r, i) => {
+    // 直接从 a/b/common 分段渲染，避免从完整文本反拆导致重复
+    const segs = [];
+    if (r.a) segs.push(`<em>${esc(r.a)}</em>`);
+    if (r.b) segs.push(`<i>${esc(r.b)}</i>`);
+    const commonOnly = normalizePrompt(els.matrixCommon.value);
+    if (commonOnly) segs.push(esc(commonOnly));
+    return `<div class="mx-row ${r.on ? '' : 'off'}" data-mxid="${esc(r.id)}">
+      <span class="mx-idx">${String(i + 1).padStart(2, '0')}</span>
+      <span class="mx-text">${segs.join('<span class="mx-sep">, </span>')}</span>
+    </div>`;
+  }).join('');
+}
+
+function updateMatrixCount() {
+  const onRows = state.matrix.rows.filter(r => r.on);
+  els.matrixCount.textContent = onRows.length;
+  const perReq = clamp(Number(state.cfg.count) || 1, 1, 8);
+  const total = onRows.length * perReq;
+  const hint = els.matrixBatchHint;
+  if (perReq > 1) {
+    hint.textContent = `每条组合生成 ${perReq} 张，共约 ${total} 张`;
+  } else {
+    hint.textContent = '';
+  }
+  const cnt = els.cntPreview;
+  cnt.textContent = `${parseLines(els.listA.value).length} × ${parseLines(els.listB.value).length} = ${state.matrix.rows.length}`;
+  cnt.classList.toggle('warn', onRows.length > 30);
+  $('#matrixRun').disabled = onRows.length === 0 || state.matrix.running;
+  if (onRows.length > 30) hint.textContent = `⚠ 数量较多（${total} 张），将按顺序逐条请求，耗时可能较长`;
+}
+
+/* 逐条执行组合出图 */
+async function runMatrix() {
+  const rows = state.matrix.rows.filter(r => r.on);
+  if (!rows.length) { toast('没有要生成的组合', 'warn'); return; }
+
+  let endpoint, headers;
+  try {
+    endpoint = buildEndpoint();
+    headers = { 'Content-Type': 'application/json' };
+    if (state.cfg.apiKey.trim()) headers['Authorization'] = 'Bearer ' + state.cfg.apiKey.trim();
+    buildPayload('probe'); // 提前校验额外 JSON 等参数合法性
+  } catch (e) {
+    toast(e.message, 'err', 3200); return;
+  }
+
+  state.matrix.running = true;
+  const runBtn = els.matrixRun;
+  const prog = els.matrixProgress;
+  runBtn.disabled = true;
+
+  // 清空画布为本次批量结果做准备
+  state.busy = true;
+  els.tabResult.click();
+  state.ui.results = [];
+  const placeholders = rows.map(r => ({ id: uid(), kind: 'loading' }));
+  state.ui.results = placeholders.slice();
+  renderResults();
+
+  const collected = [];
+  let okCnt = 0, failCnt = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    prog.textContent = `进度 ${i + 1}/${rows.length}`;
+    // 当前项标为 loading
+    const ph = placeholders[i];
+    const idxInResults = state.ui.results.findIndex(x => x.id === ph.id);
+    if (idxInResults >= 0) state.ui.results[idxInResults] = { id: ph.id, kind: 'loading' };
+    renderResults();
+
+    try {
+      const payload = buildPayload(row.text);
+      let result = await postImages(endpoint, headers, payload);
+
+      if (!result.ok) {
+        const firstMsg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) || result.text || '';
+        const stripKeys = pickParamsToStrip(result.status, firstMsg, payload);
+        if (stripKeys.length) {
+          const retryPayload = Object.assign({}, payload);
+          stripKeys.forEach(k => delete retryPayload[k]);
+          result = await postImages(endpoint, headers, retryPayload);
+        }
+      }
+
+      if (!result.ok) {
+        const msg = (result.data && (result.data.error?.message || result.data.message || result.data.msg)) ||
+                    result.text.slice(0, 300) || ('HTTP ' + result.status);
+        throw new Error(`HTTP ${result.status} · ${msg}`);
+      }
+
+      const imgs = extractImages(result.data);
+      if (!imgs.length) throw new Error('返回中未识别到图片');
+
+      const newItems = imgs.map(im => ({ id: uid(), kind: 'img', src: im.src, prompt: row.text, time: Date.now() }));
+      const at = state.ui.results.findIndex(x => x.id === ph.id);
+      if (at >= 0) state.ui.results.splice(at, 1, ...newItems);
+      else state.ui.results.push(...newItems);
+
+      newItems.forEach(it => {
+        collected.push(it);
+        state.history.unshift({ id: uid(), kind: 'img', src: it.src, prompt: it.prompt, time: Date.now() });
+      });
+      if (state.history.length > 200) state.history.length = 200;
+      okCnt++;
+    } catch (e) {
+      let msg = e.message || String(e);
+      if (e.name === 'AbortError') msg = '请求超时';
+      const at = state.ui.results.findIndex(x => x.id === ph.id);
+      const errItem = { id: ph.id, kind: 'error', message: msg };
+      if (at >= 0) state.ui.results.splice(at, 1, errItem);
+      else state.ui.results.push(errItem);
+      failCnt++;
+    }
+    renderResults();
+    bumpUsage(row.text);
+  }
+
+  persist.hist();
+  renderHistory();
+  state.busy = false;
+  state.matrix.running = false;
+  runBtn.disabled = false;
+  prog.textContent = `完成 ${okCnt} 条${failCnt ? ' · 失败 ' + failCnt + ' 条' : ''}`;
+
+  toast(`组合出图完成 · 成功 ${okCnt} 条${failCnt ? `，失败 ${failCnt} 条` : ''}`, failCnt ? 'warn' : 'ok', 3600);
+
+  if (els.matrixAutoDownload.checked && collected.length) {
+    closeMatrix();
+    enterDownloadMode();
+  }
+}
+
 /* ---------------- 主题 / 抽屉 ---------------- */
 function applyTheme(t) {
   state.ui.theme = t;
@@ -2038,6 +2451,19 @@ function init() {
   els.modelList = $('#modelList');
   els.modelFilter = $('#modelFilter');
   els.modelCount = $('#modelCount');
+  els.dlBar = $('#dlBar');
+  els.dlInfo = $('#dlInfo');
+  els.matrix = $('#matrix');
+  els.matrixList = $('#matrixList');
+  els.matrixCount = $('#matrixCount');
+  els.matrixBatchHint = $('#matrixBatchHint');
+  els.matrixCommon = $('#matrixCommon');
+  els.matrixProgress = $('#matrixProgress');
+  els.matrixRun = $('#matrixRun');
+  els.matrixAutoDownload = $('#matrixAutoDownload');
+  els.cntPreview = $('#cntPreview');
+  els.listA = $('#listA');
+  els.listB = $('#listB');
   els.charCount = $('#charCount');
   els.tokenEst = $('#tokenEst');
 
@@ -2054,6 +2480,17 @@ function init() {
   renderChips();
   renderHistory();
   renderResults();
+
+  // 恢复批量下载模式（刷新前若处于该模式）
+  const dlState = store.read(LS.dl, null);
+  if (dlState && dlState.mode && Array.isArray(dlState.picked) && dlState.picked.length) {
+    state.ui.dlMode = true;
+    state.ui.dlPicked = dlState.picked;
+    els.dlBar.classList.remove('hidden');
+    $('#btnDownloadMode').classList.add('active');
+    updateDlInfo();
+    renderHistory();
+  }
 
   // 恢复草稿
   if (state.cfg._draft) els.promptBox.value = state.cfg._draft;
