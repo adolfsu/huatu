@@ -1,0 +1,32 @@
+{
+  "name": "Prompt Painter · 提示词绘画工作台",
+  "short_name": "Painter",
+  "description": "提示词管理工作台：追加式调用、分组词库、组合出图、图生图与视频生成",
+  "id": "prompt-painter",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4f5f8",
+  "theme_color": "#5b5bd6",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icons/icon-192.png",  "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png",  "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "视频生成",
+      "short_name": "视频",
+      "url": "./?go=video",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "组合出图",
+      "short_name": "组合",
+      "url": "./?go=matrix",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

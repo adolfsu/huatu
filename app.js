@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.7.2';
+const APP_VERSION = '1.8.0';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -2362,6 +2362,12 @@ function bindEvents() {
   $('#btnGhPull').addEventListener('click', () => ghPull(false));
   $('#btnGhTest').addEventListener('click', () => ghTestConn());
 
+  /* PWA：更新与安装 */
+  $('#btnCheckUpdate').addEventListener('click', () => checkForUpdate());
+  $('#btnInstallApp').addEventListener('click', installApp);
+  $('#btnUpdateGo').addEventListener('click', applyUpdateNow);
+  $('#btnUpdateLater').addEventListener('click', () => { els.updateBar.hidden = true; });
+
   /* --- 数据 --- */
   $('#btnExport').addEventListener('click', exportJson);
   $('#btnExport2').addEventListener('click', exportJson);
@@ -4093,6 +4099,9 @@ function applyTheme(t) {
   state.ui.theme = t;
   document.documentElement.dataset.theme = t;
   $('#btnTheme').textContent = t === 'dark' ? '☀' : '◐';
+  // PWA 浏览器框 / 状态栏颜色跟随主题
+  const meta = document.querySelector('#metaThemeColor');
+  if (meta) meta.setAttribute('content', t === 'dark' ? '#12141c' : '#5b5bd6');
 }
 function closeDrawers() {
   els.panelLib.classList.remove('open');
@@ -4140,6 +4149,12 @@ function init() {
   els.modalBody = $('#modalBody');
   els.apiTestResult = $('#apiTestResult');
   els.ghResult = $('#ghResult');
+  els.updateBar = $('#updateBar');
+  els.updateText = $('#updateText');
+  els.updateResult = $('#updateResult');
+  els.appVerNow = $('#appVerNow');
+  els.appModeNow = $('#appModeNow');
+  els.appOfflineNow = $('#appOfflineNow');
   els.debugPre = $('#debugPre');
   els.storeStat = $('#storeStat');
   els.comboInfo = $('#comboInfo');
@@ -4279,6 +4294,220 @@ function init() {
       }
     }, 800);
   }
+
+  /* PWA：注册更新通道 + 处理桌面快捷方式入口 */
+  setupPWA();
+  handleLaunchIntent();
+}
+
+/* ============================================================
+   PWA：Service Worker / 应用内更新 / 安装引导
+   —— 「安装形态」下断网可用，新版本发布后横幅提示、一键切换
+   ============================================================ */
+const PWA_OK = 'serviceWorker' in navigator &&
+  (location.protocol === 'https:' ||
+   location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+
+let pwaReg = null;           // ServiceWorkerRegistration
+let updateWaiting = null;    // 处于 waiting 的新版本 SW
+let deferredInstall = null;  // beforeinstallprompt 事件
+let pwaReloaded = false;     // 防止 controllerchange 重复刷新
+let expectReload = false;    // 仅「用户确认更新」后才允许自动刷新
+let updateFoundFlag = false; // checkForUpdate 轮询用
+
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+
+/* 问一个 SW 它的版本号（新 SW 在 waiting 态也能收消息） */
+function swVersion(worker) {
+  return new Promise((resolve) => {
+    if (!worker || !worker.postMessage) return resolve('');
+    let done = false;
+    const ch = new MessageChannel();
+    ch.port1.onmessage = (e) => { done = true; resolve((e.data && e.data.v) || ''); };
+    try { worker.postMessage({ type: 'GET_VERSION' }, [ch.port2]); }
+    catch (e) { return resolve(''); }
+    setTimeout(() => { if (!done) resolve(''); }, 1200);
+  });
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function showUpdateBar() {
+  if (!updateWaiting) return;
+  swVersion(updateWaiting).then(v => {
+    els.updateText.textContent = v ? `新版本 v${v} 已就绪，点击立即切换`
+                                   : '发现新版本，已就绪';
+  });
+  els.updateBar.hidden = false;
+}
+
+function watchRegistration(reg) {
+  reg.addEventListener('updatefound', () => {
+    updateFoundFlag = true;
+    const nw = reg.installing;
+    if (!nw) return;
+    nw.addEventListener('statechange', () => {
+      /* 首次安装（无 controller）不算更新，不打扰 */
+      if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+        updateWaiting = nw;
+        showUpdateBar();
+        renderAppInfo();
+      }
+    });
+  });
+  /* 上次点了「稍后」的 waiting，打开页面时继续提示 */
+  if (reg.waiting && navigator.serviceWorker.controller) {
+    updateWaiting = reg.waiting;
+    showUpdateBar();
+  }
+}
+
+async function setupPWA() {
+  if (!PWA_OK) { renderAppInfo(); return; }
+  try {
+    pwaReg = await navigator.serviceWorker.register(
+      './sw.js?v=' + APP_VERSION, { updateViaCache: 'none' }
+    );
+  } catch (e) { renderAppInfo(); return; }
+
+  watchRegistration(pwaReg);
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    /* 首次安装时 clients.claim() 也会触发本事件——那时不该刷新。
+       只有用户点了「立即更新」（expectReload）才切换。 */
+    if (!expectReload || pwaReloaded) return;
+    pwaReloaded = true;
+    location.reload();   // 新 SW 接管，刷新以加载新缓存的外壳
+  });
+
+  renderAppInfo();
+}
+
+/* 手动检查更新：reg.update() 后轮询等待安装落地 */
+async function checkForUpdate() {
+  const out = els.updateResult;
+  const set = (cls, html) => { out.className = 'test-result ' + cls; out.innerHTML = html; };
+
+  if (!('serviceWorker' in navigator)) {
+    set('err', '当前浏览器不支持应用内更新（缺少 Service Worker）');
+    return false;
+  }
+  const reg = pwaReg || await navigator.serviceWorker.getRegistration();
+  if (!reg) {
+    set('err', '更新通道未启用——当前像是直接打开本地文件。部署到 https（如 GitHub Pages）后访问一次即可启用。');
+    return false;
+  }
+
+  set('busy', '正在检查更新…');
+  updateWaiting = null;
+  updateFoundFlag = false;
+  const onFound = () => { updateFoundFlag = true; };
+  reg.addEventListener('updatefound', onFound);
+
+  /* 不阻塞在 reg.update() 上——它什么时候 resolve 不可控。
+     改为「发现新版本」或「2.5 秒内没有」二者竞速，用户最多等 2.5s 就有结论。 */
+  await Promise.race([
+    new Promise(res => reg.addEventListener('updatefound', () => res(true), { once: true })),
+    sleep(2500),
+  ]);
+  reg.update().catch(() => {});
+  reg.removeEventListener('updatefound', onFound);
+
+  let nw = reg.waiting || reg.installing;
+  if (nw && nw.state !== 'installed') {
+    for (let i = 0; i < 30 && nw.state === 'installing'; i++) {
+      await sleep(400);
+      if (nw.state === 'redundant') { nw = null; break; }
+    }
+  }
+
+  if (nw && nw.state === 'installed') {
+    updateWaiting = nw;
+    const v = await swVersion(nw);
+    set('ok', `🎉 发现新版本 <b>v${esc(v || '?')}</b>，已就绪，点击顶部横幅即可切换`);
+    showUpdateBar();
+    return true;
+  }
+  if (updateFoundFlag || nw) {
+    set('busy', '新版本正在后台下载，就绪后会自动提示…');
+    return true;
+  }
+
+  /* 没有新 SW，说明当前运行的已是最新（其版本就是注册时用的 APP_VERSION） */
+  set('ok', `✓ 已是最新版本 <b>v${esc(APP_VERSION)}</b>`);
+  return false;
+}
+
+function applyUpdateNow() {
+  if (!updateWaiting) { els.updateBar.hidden = true; return; }
+  els.updateText.textContent = '正在切换到新版本…';
+  expectReload = true;
+  updateWaiting.postMessage('SKIP_WAITING');
+  /* 新 SW activate 后 clients.claim → controllerchange → 自动刷新 */
+}
+
+function renderAppInfo() {
+  if (!els.appVerNow) return;
+  els.appVerNow.textContent = 'v' + APP_VERSION;
+  const stand = isStandalone();
+  els.appModeNow.textContent = stand ? '已安装为应用' : '浏览器标签';
+  els.appOfflineNow.textContent = (PWA_OK && pwaReg) ? '已启用 ✓' : '未启用（需 https 或 localhost）';
+  const btnInstall = $('#btnInstallApp');
+  if (!btnInstall) return;
+  if (stand) {
+    btnInstall.textContent = '✓ 已安装';
+    btnInstall.disabled = true;
+  } else {
+    btnInstall.textContent = deferredInstall ? '📲 安装到设备' : '📲 查看安装方法';
+    btnInstall.disabled = false;
+  }
+}
+
+function installApp() {
+  if (isStandalone()) return;
+  if (deferredInstall) {
+    deferredInstall.prompt();
+    deferredInstall.userChoice.then(({ outcome }) => {
+      if (outcome === 'accepted') toast('安装成功！可从桌面 / 主屏幕打开', 'ok', 3200);
+      deferredInstall = null;
+      renderAppInfo();
+    }).catch(() => { renderAppInfo(); });
+  } else {
+    openModal('安装到设备 📲', INSTALL_HELP_HTML);
+  }
+}
+
+const INSTALL_HELP_HTML = `
+  <p>把 Prompt Painter 装成独立 App，全屏运行、离线可用：</p>
+  <div class="app-install-tips">
+    <div><b>🖥 桌面 Chrome / Edge</b><br>地址栏右侧的「安装」图标 ⬇，或菜单 → 「安装 Prompt Painter」</div>
+    <div><b>🤖 安卓 Chrome</b><br>菜单 ⋮ → 「添加到主屏幕」或「安装应用」</div>
+    <div><b>🍎 iPhone / iPad（Safari）</b><br>底部「分享」按钮 → 「添加到主屏幕」</div>
+  </div>
+  <p style="margin-top:10px;color:var(--text-3);font-size:12px">安装后数据仍在设备本地；词库云同步与跨设备迁移照常可用。</p>
+`;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstall = e;
+  renderAppInfo();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstall = null;
+  toast('安装成功！可从桌面 / 主屏幕打开', 'ok', 3200);
+  renderAppInfo();
+});
+
+/* manifest shortcuts（长按图标菜单）落地的 ?go= 快捷入口 */
+function handleLaunchIntent() {
+  const go = new URLSearchParams(location.search).get('go');
+  if (!go) return;
+  setTimeout(() => {
+    if (go === 'video') $('#btnVideo')?.click();
+    if (go === 'matrix') openMatrix();
+  }, 600);
 }
 
 if (document.readyState === 'loading') {

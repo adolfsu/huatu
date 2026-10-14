@@ -1764,3 +1764,44 @@ code {
 
 /* 云同步「测试连接」结果内的次要说明文字 */
 .test-result .tr-dim { color: var(--text-3); opacity: .85; font-size: 11px; }
+
+/* ============================================================
+   PWA：应用内更新横幅 + 应用信息
+   ============================================================ */
+.update-bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 210;
+  display: flex; align-items: center; gap: 10px;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  background: linear-gradient(135deg, #5b5bd6, #413ec0);
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(65,62,192,.35);
+  animation: ubIn .32s cubic-bezier(.2,.9,.3,1.2);
+}
+/* 老坑：display:flex 会覆盖 hidden，必须显式声明 */
+.update-bar[hidden] { display: none; }
+@keyframes ubIn { from { transform: translateY(-110%); } to { transform: translateY(0); } }
+.update-bar .ub-ico { font-size: 16px; }
+.update-bar .ub-text { font-size: 12.5px; font-weight: 600; letter-spacing: .2px; }
+.update-bar .ub-sp { flex: 1; }
+.update-bar .btn.tiny { background: rgba(255,255,255,.16); color: #fff; border: 1px solid rgba(255,255,255,.34); }
+.update-bar .btn.tiny.primary { background: #fff; color: #413ec0; border-color: #fff; font-weight: 700; }
+.update-bar .btn.tiny.primary:hover { background: #f0eeff; }
+.update-bar .ub-later { opacity: .85; }
+
+.app-info-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 2px; font-size: 12.5px; color: var(--text-2);
+  border-bottom: 1px dashed var(--border);
+}
+.app-info-row:last-of-type { border-bottom: 0; }
+.app-info-row b { color: var(--text); font-size: 12.5px; font-weight: 600; }
+
+.app-install-tips { display: grid; gap: 10px; margin: 12px 0 4px; }
+.app-install-tips > div {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 12.5px; color: var(--text-2); line-height: 1.6;
+}
+.app-install-tips b { color: var(--text); font-size: 12.5px; }

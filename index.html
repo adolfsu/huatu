@@ -4,10 +4,28 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Prompt Painter · 提示词绘画工作台</title>
+<meta name="description" content="提示词管理工作台：追加式调用、分组词库、组合出图、图生图与视频生成">
+<meta name="theme-color" content="#5b5bd6" id="metaThemeColor">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/favicon-64.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Painter">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+
+<!-- 应用内更新横幅 -->
+<div class="update-bar" id="updateBar" hidden>
+  <span class="ub-ico">🎉</span>
+  <span class="ub-text" id="updateText">发现新版本</span>
+  <span class="ub-sp"></span>
+  <button class="btn tiny primary" id="btnUpdateGo">立即更新</button>
+  <button class="btn tiny ghost ub-later" id="btnUpdateLater">稍后</button>
+</div>
 
 <!-- ============ 顶栏 ============ -->
 <header class="topbar">
@@ -539,6 +557,21 @@
             <button class="btn tiny danger" id="btnWipeAll">重置全部数据</button>
           </div>
           <small class="block" id="storeStat"></small>
+        </div>
+      </details>
+
+      <details class="acc" id="accApp">
+        <summary>应用与更新</summary>
+        <div class="acc-body">
+          <div class="app-info-row"><span>当前版本</span><b id="appVerNow">v?</b></div>
+          <div class="app-info-row"><span>运行方式</span><b id="appModeNow">浏览器标签</b></div>
+          <div class="app-info-row"><span>离线可用</span><b id="appOfflineNow">检测中…</b></div>
+          <div class="field-row">
+            <button class="btn tiny primary" id="btnCheckUpdate">🔄 检查更新</button>
+            <button class="btn tiny ghost" id="btnInstallApp">📲 安装到设备</button>
+          </div>
+          <div class="test-result" id="updateResult"></div>
+          <small class="block">「安装到设备」会把本站装成一个独立 App：桌面端出现在任务栏 / 开始菜单，手机端出现在主屏幕，打开后全屏无地址栏，且断网也能浏览词库与历史。安装入口依赖浏览器支持（iOS Safari 请用「分享 → 添加到主屏幕」）。</small>
         </div>
       </details>
 
