@@ -1,5 +1,5 @@
 /* ============================================================
-   Prompt Painter · 提示词绘画工作台
+   欧阳画板 · 提示词绘画工作台
    纯前端 · 无构建 · OpenAI 兼容图片接口 + GitHub 云同步
    ============================================================ */
 (() => {
@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.9.0';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -194,6 +194,34 @@ function normalizePrompt(text) {
     .trim();
 }
 
+/* dataURI → Blob（历史归档、图生图等都需要把内联图落成二进制） */
+function dataUrlToBlob(dataUrl) {
+  const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl || '');
+  if (!m) return null;
+  const mime = m[1] || 'image/png';
+  try {
+    const bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime });
+  } catch (e) { return null; }
+}
+
+/* 400 且报错点名「某字段类型不对」时，翻转该字段类型后重试 */
+function coercePayload(payload, msg) {
+  const m = /struct field\s+[\w.]*?\.?(\w+)\s+of type\s+(\w+)/i.exec(msg || '');
+  if (!m) return null;
+  const field = m[1], want = m[2].toLowerCase();
+  if (!(field in payload) || field === 'prompt' || field === 'model') return null;
+  const cur = payload[field];
+  const out = Object.assign({}, payload);
+  if (want === 'string' && typeof cur === 'number') out[field] = String(cur);
+  else if (want === 'number' && typeof cur === 'string' && String(cur).trim() !== '' && isFinite(Number(cur))) out[field] = Number(cur);
+  else if (want === 'boolean') out[field] = (cur === true || cur === 'true');
+  else return null;
+  return out;
+}
+
 /* ---------------- 状态 ---------------- */
 const state = {
   lib: [],
@@ -210,12 +238,6 @@ const state = {
   matrix: {             // 矩阵组合工作台
     rows: [],           // [{ id, a, b, text, on }]
     running: false,
-  },
-  video: {              // 视频生成工作台（结果不持久化，链接通常有时效）
-    tasks: [],          // [{ id, kind:'task'|'video'|'error', ... }]
-    running: false,
-    abort: false,
-    ref: null,          // 图生视频的首帧图 { dataUrl, base64, ... }（仅存内存）
   },
 };
 
@@ -253,33 +275,6 @@ function defaultCfg() {
     trApiKey: '',            // 留空则用画图 Key
     trModel: 'gpt-4o-mini',
     trAction: 'replace',
-    /* 视频生成（接口完全独立，与画图互不影响） */
-    video: {
-      mode: 't2v',             // t2v 文生视频 | i2v 图生视频
-      baseUrl: '',
-      apiKey: '',
-      model: 'sora-2',
-      submitPath: '/video/generations',
-      queryPath: '',           // 留空 = 提交路径 + /{id}
-      format: 'json',          // json | multipart
-      auth: 'bearer',          // bearer | x-api-key | none
-      pollEvery: 4,            // 轮询间隔（秒）
-      pollMax: 300,            // 最长等待（秒）
-      size: '1280x720',
-      customW: 1280,
-      customH: 720,
-      seconds: '5',
-      fps: '',
-      seed: '',
-      negative: '',
-      mapSize: '',
-      mapDuration: '',
-      mapImage: '',
-      mapNegative: '',
-      extraJson: '',
-      debug: false,
-      prompt: '',              // 提示词草稿
-    },
     gh: {
       owner: '', repo: '', branch: 'main', path: 'prompts.json',
       token: '', autoSync: true, autoPull: false, publicRead: false, lastSync: 0,
@@ -332,7 +327,8 @@ function loadAll() {
   const cfg = Object.assign(base, cfgRaw);
   // 嵌套对象要单独合并默认值，否则旧配置缺字段会变成 undefined
   cfg.gh = Object.assign(defaultCfg().gh, cfgRaw.gh || {});
-  cfg.video = Object.assign(defaultCfg().video, cfgRaw.video || {});
+  // 旧版本遗留的视频接口配置（cfg.video）已不再使用，原样忽略即可，
+  // 不主动删除，避免改动用户已有配置文件的结构。
   // 旧字段迁移
   if (cfgRaw.mode && !cfgRaw.sizeString) { /* noop */ }
   state.cfg = cfg;
@@ -707,7 +703,7 @@ function renderResults() {
      · 缩略图   → IndexedDB，永久保留（单张约 20KB）
      · 提示词   → 记录里，几乎不占空间
    ============================================================ */
-const HIST_DB    = 'prompt-painter';
+const HIST_DB    = 'prompt-painter';   // 沿用旧库名，保证老用户的图片历史不丢
 const HIST_STORE = 'hist';
 const KEEP_FULL  = 10;    // 保留大图原图的条数（用户策略：最近 10 张）
 const THUMB_MAX  = 256;   // 缩略图最长边
@@ -789,7 +785,7 @@ async function makeThumbBlob(src, max) {
 
 /* dataURL / blobURL → Blob（无损保留原始字节） */
 async function srcToBlob(src) {
-  if (/^data:/.test(src)) return vsDataUrlToBlob(src);
+  if (/^data:/.test(src)) return dataUrlToBlob(src);
   if (/^blob:/.test(src)) { try { return await (await fetch(src)).blob(); } catch (e) { return null; } }
   return null;
 }
@@ -888,7 +884,7 @@ async function histMigrateLS() {
     };
     try {
       if (it.src && /^data:/.test(it.src)) {
-        rec.full = vsDataUrlToBlob(it.src);
+        rec.full = dataUrlToBlob(it.src);
         rec.thumb = await makeThumbBlob(it.src);
       } else if (it.src) {
         rec.srcUrl = it.src;
@@ -1066,7 +1062,7 @@ async function postImagesSmart(endpoint, headers, payload) {
     stripKeys.forEach(k => delete retryPayload[k]);
     note = `接口不认参数 ${stripKeys.join('/')}，已自动去掉重试`;
   } else {
-    const coerced = vsCoercePayload(payload, firstMsg);
+    const coerced = coercePayload(payload, firstMsg);
     if (coerced) { retryPayload = coerced; note = '接口要求字段类型不同，已自动纠正重试'; }
   }
   if (!retryPayload) return result;
@@ -1319,7 +1315,7 @@ function libPayload() {
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
-    app: 'prompt-painter',
+    app: 'prompt-painter',   // 数据标识，保持不变以兼容云端旧文件
     groups: state.lib,
   };
 }
@@ -1432,7 +1428,7 @@ async function ghPush(silent) {
     } catch (e) { /* 文件不存在或读失败，当作新建 */ }
 
     const body = {
-      message: `chore(prompt-painter): 更新提示词库 · ${new Date().toLocaleString('zh-CN')}`,
+      message: `chore(欧阳画板): 更新提示词库 · ${new Date().toLocaleString('zh-CN')}`,
       content: b64EncodeUnicode(JSON.stringify(libPayload(), null, 2)),
       branch: state.cfg.gh.branch || 'main',
     };
@@ -1621,7 +1617,7 @@ function exportJson() {
   a.href = URL.createObjectURL(blob);
   const d = new Date();
   const p = n => String(n).padStart(2, '0');
-  a.download = `prompt-painter-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+  a.download = `ouyang-huaban-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 3000);
   toast('已导出 JSON 备份', 'ok');
@@ -1853,7 +1849,7 @@ function markSizeActive() {
    ============================================================ */
 function openModal(title, html) {
   els.modalTitle.textContent = title;
-  els.modalBody.innerHTML = html + `<div class="ver-badge">Prompt Painter v${APP_VERSION}</div>`;
+  els.modalBody.innerHTML = html + `<div class="ver-badge">欧阳画板 v${APP_VERSION}</div>`;
   els.modal.hidden = false;
 }
 function closeModal() { els.modal.hidden = true; }
@@ -1891,7 +1887,7 @@ const HELP_HTML = `
 
 const ABOUT_HTML = `
   <div class="kv">
-    <b>应用</b><span>Prompt Painter · 提示词绘画工作台</span>
+    <b>应用</b><span>欧阳画板 · 提示词绘画工作台</span>
     <b>形态</b><span>单页纯前端应用，无后端、无构建</span>
     <b>绘图接口</b><span>OpenAI 兼容的 Images API</span>
     <b>数据存放</b><span>浏览器 localStorage（+ 可选 GitHub 仓库）</span>
@@ -2185,12 +2181,6 @@ function bindEvents() {
         const f = it.getAsFile();
         if (f) {
           e.preventDefault();
-          // 视频工作台开着 → 图片交给视频模块当首帧
-          if (els.vstudio && !els.vstudio.hidden) {
-            if (state.cfg.video.mode === 'i2v') vsHandleFile(f);
-            else toast('当前是文生视频，先切到「图生视频」再粘贴首帧', 'warn', 3200);
-            return;
-          }
           handleRefFile(f);
           // 同步打开参数面板里的图生图区域
           const acc = document.getElementById('accI2I');
@@ -2361,12 +2351,6 @@ function bindEvents() {
   $('#btnGhPush').addEventListener('click', () => ghPush(false));
   $('#btnGhPull').addEventListener('click', () => ghPull(false));
   $('#btnGhTest').addEventListener('click', () => ghTestConn());
-
-  /* PWA：更新与安装 */
-  $('#btnCheckUpdate').addEventListener('click', () => checkForUpdate());
-  $('#btnInstallApp').addEventListener('click', installApp);
-  $('#btnUpdateGo').addEventListener('click', applyUpdateNow);
-  $('#btnUpdateLater').addEventListener('click', () => { els.updateBar.hidden = true; });
 
   /* --- 数据 --- */
   $('#btnExport').addEventListener('click', exportJson);
@@ -3079,7 +3063,6 @@ function handleMoreAction(action) {
   closeMoreMenu();
   switch (action) {
     case 'theme':    $('#btnTheme').click(); break;
-    case 'video':    openVideo(); break;
     case 'matrix':   openMatrix(); break;
     case 'download': $('#btnDownloadMode').click(); break;
     case 'img2img':  $('#btnImg2Img').click(); break;
@@ -3183,923 +3166,12 @@ async function translatePrompt() {
   }
 }
 
-/* ============================================================
-   视频生成（文生视频 / 图生视频）
-   —— 接口独立配置，与画图互不影响
-   —— 同时兼容「同步直返视频」与「异步任务轮询」两种形态
-   ============================================================ */
-
-const VS_DONE_RE = /^(succeed(ed)?|success|completed?|done|finished|ready|ok|2|200)$/i;
-const VS_FAIL_RE = /^(fail(ed|ure)?|error|reject(ed)?|cancell?ed|expired|timeout|3|4|5)$/i;
-const VS_VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v)(\?|#|$)/i;
-
-/* ---------- 路径拼接 ---------- */
-function vsBase() {
-  return String(state.cfg.video.baseUrl || '').trim().replace(/\/+$/, '');
-}
-
-function vsJoin(base, path) {
-  const b = String(base || '').replace(/\/+$/, '');
-  let p = String(path || '').trim();
-  if (!p) return b;
-  if (/^https?:\/\//i.test(p)) return p;
-  if (!/^\//.test(p)) p = '/' + p;
-  return b + p;
-}
-
-function vsSubmitUrl() {
-  const v = state.cfg.video;
-  return vsJoin(vsBase(), String(v.submitPath || '').trim() || '/video/generations');
-}
-
-/* 查询地址：默认 = 提交路径 + /{id}；也可自定义模板 */
-function vsQueryUrl(taskId) {
-  const v = state.cfg.video;
-  let tpl = String(v.queryPath || '').trim();
-  if (!tpl) {
-    let p = String(v.submitPath || '').trim() || '/video/generations';
-    if (!/^\//.test(p)) p = '/' + p;
-    tpl = p.replace(/\/+$/, '') + '/{id}';
-  }
-  return vsJoin(vsBase(), tpl.replace(/\{id\}/g, encodeURIComponent(taskId)));
-}
-
-function vsHeaders(json) {
-  const v = state.cfg.video;
-  const h = {};
-  if (json) h['Content-Type'] = 'application/json';
-  const key = String(v.apiKey || '').trim();
-  if (key && v.auth !== 'none') {
-    if (v.auth === 'x-api-key') h['x-api-key'] = key;
-    else h['Authorization'] = 'Bearer ' + key;
-  }
-  return h;
-}
-
-/* ---------- 响应嗅探：不挑字段名，尽量猜得出来 ---------- */
-function vsDeepFind(obj, keys, depth = 0) {
-  if (!obj || typeof obj !== 'object' || depth > 6) return null;
-  for (const k of keys) {
-    const val = obj[k];
-    if (typeof val === 'string' && val) return val;
-    if (typeof val === 'number' && isFinite(val)) return String(val);
-  }
-  for (const k of Object.keys(obj)) {
-    const r = vsDeepFind(obj[k], keys, depth + 1);
-    if (r != null && r !== '') return r;
-  }
-  return null;
-}
-
-function vsExtractTaskId(data) {
-  return vsDeepFind(data, [
-    'task_id', 'taskId', 'request_id', 'requestId',
-    'video_id', 'videoId', 'job_id', 'jobId', 'generation_id', 'id',
-  ]);
-}
-
-function vsExtractStatus(data) {
-  return vsDeepFind(data, ['status', 'state', 'task_status', 'taskStatus', 'video_status']);
-}
-
-function vsNormalizeStatus(raw) {
-  if (raw == null || raw === '') return 'pending';
-  const s = String(raw).trim();
-  if (VS_DONE_RE.test(s)) return 'done';
-  if (VS_FAIL_RE.test(s)) return 'fail';
-  return 'running';
-}
-
-function vsLooksLikeVideoUrl(s) {
-  if (typeof s !== 'string' || s.length < 8) return false;
-  if (/^data:video\//i.test(s)) return true;
-  if (!/^https?:\/\//i.test(s)) return false;
-  return VS_VIDEO_EXT_RE.test(s);
-}
-
-function vsCollectUrls(obj, path, out, depth) {
-  if (!obj || typeof obj !== 'object' || depth > 8) return out;
-  Object.keys(obj).forEach(k => {
-    const val = obj[k];
-    const p = path ? path + '.' + k : k;
-    if (typeof val === 'string') {
-      if (vsLooksLikeVideoUrl(val)) out.push({ url: val, key: p });
-    } else if (val && typeof val === 'object') {
-      vsCollectUrls(val, p, out, depth + 1);
-    }
-  });
-  return out;
-}
-
-/* 字段名里带 video / url / output 的优先，避免误抓封面图 */
-function vsExtractVideoUrl(data) {
-  if (typeof data === 'string') return vsLooksLikeVideoUrl(data) ? data : '';
-  if (!data || typeof data !== 'object') return '';
-  const found = vsCollectUrls(data, '', [], 0);
-  if (!found.length) return '';
-  found.sort((a, b) => {
-    const rank = x => (/video/i.test(x.key) ? 0 : /url|output|result|src|download/i.test(x.key) ? 1 : 2);
-    return rank(a) - rank(b);
-  });
-  return found[0].url;
-}
-
-function vsExtractB64Video(data) {
-  const b64 = vsDeepFind(data, ['video_base64', 'b64_json', 'video_b64']);
-  if (b64 && b64.length > 500) return 'data:video/mp4;base64,' + b64;
-  return '';
-}
-
-function vsExtractCover(data) {
-  const c = vsDeepFind(data, [
-    'cover_url', 'coverUrl', 'cover', 'thumbnail_url', 'thumbnail',
-    'poster', 'first_frame_url', 'image_url',
-  ]);
-  if (typeof c !== 'string' || !c) return '';
-  return (/^https?:\/\//i.test(c) || /^data:image\//i.test(c)) ? c : '';
-}
-
-function vsExtractProgress(data) {
-  const p = vsDeepFind(data, ['progress', 'percent', 'percentage', 'progress_percent']);
-  if (p == null) return null;
-  const n = parseFloat(p);
-  if (!isFinite(n)) return null;
-  return Math.round(n <= 1 ? n * 100 : n);
-}
-
-function vsTaskMessage(data) {
-  if (!data) return '';
-  if (typeof data === 'string') return data.slice(0, 400);
-  if (typeof data === 'object') {
-    if (typeof data.error === 'string') return data.error.slice(0, 400);
-    if (data.error && typeof data.error === 'object' && data.error.message) {
-      return String(data.error.message).slice(0, 400);
-    }
-    const m = vsDeepFind(data, ['fail_reason', 'error_message', 'error_msg', 'message', 'msg', 'reason']);
-    if (m) return String(m).slice(0, 400);
-  }
-  return '';
-}
-
-function vsErrMsg(data, text) {
-  const m = vsTaskMessage(data);
-  if (m) return m;
-  return String(text || '').slice(0, 400) || '（无返回内容）';
-}
-
-/* 把服务商的原话翻译成人话：能识别的模式才给提示 */
-function vsExplainError(msg) {
-  const m = String(msg || '');
-  if (/no usage expression or meter/i.test(m)) {
-    return '这条来自中转站/服务端，不是请求格式问题：该站点没有为这个模型配置视频任务的计费表达式。通常两种原因——① 该站点根本不支持这个模型名跑视频任务，换用它文档里列出的视频模型（如 sora-2 / veo3 / kling-v1 / hailuo-02）；② 站点管理员尚未给该模型开通视频任务计费。可点「复制诊断信息」发给站点客服核对。';
-  }
-  if (/model\s*not\s*found|invalid model|unknown model|无可用渠道|不支持(的)?模型|模型不存在/i.test(m)) {
-    return '站点不认这个模型名。点「获取模型」从它给的列表里挑一个，或改成该站点文档里的写法。';
-  }
-  if (/insufficient|quota|balance|余额|欠费|额度/i.test(m)) {
-    return '账户余额或额度不足，充值后再试。';
-  }
-  if (/unauthorized|invalid api key|\b401\b/i.test(m)) {
-    return 'API Key 无效或与这个 Base URL 不配套：检查是否复制完整、有没有多余空格。';
-  }
-  if (/forbidden|\b403\b/i.test(m)) {
-    return 'Key 没有调用该模型的权限：在站点里确认该模型已对你开放。';
-  }
-  if (/content|sensitive|violat|policy|审核|违规/i.test(m)) {
-    return '提示词或首帧图触发了内容审核，换个说法或换张图再试。';
-  }
-  if (/Failed to fetch|NetworkError|CORS/i.test(m)) {
-    return '网络层就断了：Base URL 写错，或该站点不允许网页直连（无 CORS 头）。可换支持跨域的中转站点。';
-  }
-  if (/超时|timeout/i.test(m)) {
-    return '等待超时：视频任务耗时较长，可在「高级」里把最长等待时间调大。';
-  }
-  return '';
-}
-
-function vsShort(data, text) {
-  return (data ? JSON.stringify(data) : String(text || '')).slice(0, 300);
-}
-
-/* ---------- 网络 ---------- */
-async function vsFetch(url, opts, timeoutMs) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 120000);
-  try {
-    const res = await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
-    const text = await res.text();
-    let data = null;
-    try { data = JSON.parse(text); } catch (e) { /* 可能不是 JSON */ }
-    return { ok: res.ok, status: res.status, data, text };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/* data URI → Blob（multipart 上传首帧图时需要真文件） */
-function vsDataUrlToBlob(dataUrl) {
-  const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl || '');
-  if (!m) return null;
-  const mime = m[1] || 'image/png';
-  try {
-    const bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    return new Blob([arr], { type: mime });
-  } catch (e) { return null; }
-}
-
-/* ---------- 构造请求体 ---------- */
-function vsBuildPayload(prompt) {
-  const v = state.cfg.video;
-  const body = { model: v.model || 'sora-2', prompt };
-
-  let sizeVal = '';
-  if (v.size === '__custom__') sizeVal = `${v.customW}x${v.customH}`;
-  else if (v.size) sizeVal = v.size;
-  if (sizeVal) {
-    const sf = (v.mapSize || 'size').trim() || 'size';
-    body[sf] = sizeVal;
-  }
-
-  if (v.seconds !== '' && v.seconds != null) {
-    const df = (v.mapDuration || 'seconds').trim() || 'seconds';
-    const s = String(v.seconds).trim();
-    if (s !== '') body[df] = s;   // 默认发字符串（Sora/多数 Go 后端要 string），类型不符时由 400 重试兜底
-  }
-
-  if (v.fps !== '' && v.fps != null) body.fps = Number(v.fps);
-  if (String(v.seed).trim() !== '') body.seed = Number(v.seed);
-
-  if (String(v.negative || '').trim()) {
-    const nf = (v.mapNegative || 'negative_prompt').trim() || 'negative_prompt';
-    body[nf] = normalizePrompt(v.negative);
-  }
-
-  /* 图生视频：带上首帧图 */
-  if (v.mode === 'i2v') {
-    const ref = state.video.ref;
-    if (!ref || !ref.dataUrl) throw new Error('图生视频需要先上传一张首帧图');
-    const f = (v.mapImage || 'image').trim() || 'image';
-    body[f] = ref.dataUrl;
-  }
-
-  if (String(v.extraJson || '').trim()) {
-    try {
-      const extra = JSON.parse(v.extraJson);
-      if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(body, extra);
-    } catch (e) {
-      throw new Error('额外 JSON 参数格式错误：' + e.message);
-    }
-  }
-  return body;
-}
-
-function vsBuildFormData(payload) {
-  const fd = new FormData();
-  Object.keys(payload).forEach(k => {
-    const val = payload[k];
-    if (val == null) return;
-    if (typeof val === 'string' && /^data:image\//i.test(val)) {
-      const blob = vsDataUrlToBlob(val);
-      if (blob) { fd.append(k, blob, 'frame.png'); return; }
-    }
-    fd.append(k, typeof val === 'object' ? JSON.stringify(val) : String(val));
-  });
-  return fd;
-}
-
-/* 400 且报错点名「某字段类型不对」时，翻转该字段类型后重试 */
-function vsCoercePayload(payload, msg) {
-  const m = /struct field\s+[\w.]*?\.?(\w+)\s+of type\s+(\w+)/i.exec(msg || '');
-  if (!m) return null;
-  const field = m[1], want = m[2].toLowerCase();
-  if (!(field in payload) || field === 'prompt' || field === 'model') return null;
-  const cur = payload[field];
-  const out = Object.assign({}, payload);
-  if (want === 'string' && typeof cur === 'number') out[field] = String(cur);
-  else if (want === 'number' && typeof cur === 'string' && String(cur).trim() !== '' && isFinite(Number(cur))) out[field] = Number(cur);
-  else if (want === 'boolean') out[field] = (cur === true || cur === 'true');
-  else return null;
-  return out;
-}
-
-/* ---------- 主流程 ---------- */
-function vsDur(ms) {
-  const s = Math.max(0, Math.round((ms || 0) / 1000));
-  if (s < 60) return s + ' 秒';
-  return Math.floor(s / 60) + ' 分 ' + String(s % 60).padStart(2, '0') + ' 秒';
-}
-
-function onVsGenerateClick() {
-  if (state.video.running) {
-    state.video.abort = true;
-    els.vsProgress.textContent = '正在取消…';
-    return;
-  }
-  vsGenerate();
-}
-
-function setVsGenerating(on) {
-  const btn = els.vsGenerate;
-  btn.disabled = false;
-  btn.textContent = on ? '✕ 取消生成' : '🎬 生成视频';
-  btn.classList.toggle('danger', on);
-  els.vsProgress.classList.toggle('busy', on);
-  if (!on) els.vsProgress.textContent = '';
-}
-
-async function vsGenerate() {
-  if (state.video.running) { toast('上一批还在生成中', 'warn'); return; }
-
-  const v = state.cfg.video;
-  const raw = els.vsPrompt.value.trim();
-  if (!raw) { toast('先写一段视频提示词吧', 'warn'); els.vsPrompt.focus(); return; }
-  if (!vsBase()) {
-    toast('请先在「接口配置」里填写视频接口地址', 'warn', 3800);
-    els.vsAccCfg.open = true;
-    els.vsInput.scrollTop = els.vsInput.scrollHeight;
-    return;
-  }
-  if (v.mode === 'i2v' && !(state.video.ref && state.video.ref.dataUrl)) {
-    toast('图生视频需要先上传首帧图', 'warn', 3200);
-    return;
-  }
-
-  const prompt = normalizePrompt(raw);
-  let payload, url;
-  try {
-    payload = vsBuildPayload(prompt);
-    url = vsSubmitUrl();
-  } catch (e) { toast(e.message, 'err', 3600); return; }
-
-  /* 诊断快照：出错时可一键复制发给中转站客服核对 */
-  const diag = { url, model: payload.model, format: v.format, payload };
-
-  if (v.debug) {
-    els.vsDebugPre.classList.remove('hidden');
-    els.vsDebugPre.textContent = `POST ${url}\n\n` + JSON.stringify(payload, null, 2);
-  }
-
-  state.video.running = true;
-  state.video.abort = false;
-  setVsGenerating(true);
-
-  const task = {
-    id: uid(), kind: 'task', status: 'submitting',
-    prompt, startedAt: Date.now(), elapsed: 0,
-    taskId: '', progress: null, polls: 0, rawStatus: '', message: '', src: '', cover: '',
-    hint: '', diag,
-  };
-  state.video.tasks.unshift(task);
-  renderVs();
-
-  try {
-    const headers = vsHeaders(v.format !== 'multipart');
-    const submitOnce = (pl) => vsFetch(url, {
-      method: 'POST', headers,
-      body: v.format === 'multipart' ? vsBuildFormData(pl) : JSON.stringify(pl),
-    }, 180000);
-
-    let res = await submitOnce(payload);
-    if (!res.ok && res.status === 400) {
-      /* 服务商嫌字段类型不对（如 seconds 要 string 发了 number）→ 纠正后重试一次 */
-      const alt = vsCoercePayload(payload, vsErrMsg(res.data, res.text));
-      if (alt) {
-        if (v.debug) {
-          els.vsDebugPre.textContent += `\n\n-- 400 类型纠正重试 --\n` + JSON.stringify(alt, null, 2);
-        }
-        const res2 = await submitOnce(alt);
-        if (res2.ok) res = res2;
-      }
-    }
-    if (!res.ok) throw new Error(`HTTP ${res.status} · ${vsErrMsg(res.data, res.text)}`);
-
-    /* 形态一：直接给了视频地址 */
-    const direct = vsExtractVideoUrl(res.data) || vsExtractB64Video(res.data);
-    if (direct) {
-      task.kind = 'video';
-      task.src = direct;
-      task.cover = vsExtractCover(res.data);
-      task.status = 'done';
-      task.elapsed = Date.now() - task.startedAt;
-      renderVs();
-      toast('视频已生成 🎬', 'ok', 3000);
-      return;
-    }
-
-    /* 形态二：给个任务号，慢慢轮询 */
-    const taskId = vsExtractTaskId(res.data);
-    if (!taskId) {
-      throw new Error('返回里既没有视频地址，也没有任务号：' + vsShort(res.data, res.text));
-    }
-    task.taskId = taskId;
-    task.status = 'running';
-    const st = vsExtractStatus(res.data);
-    if (st) task.rawStatus = String(st);
-    task.progress = vsExtractProgress(res.data);
-    renderVs();
-
-    await vsPollTask(task);
-  } catch (e) {
-    if (state.video.abort) {
-      state.video.tasks = state.video.tasks.filter(x => x.id !== task.id);
-      renderVs();
-      toast('已取消生成', '', 2000);
-      return;
-    }
-    let msg = e.message || String(e);
-    if (e.name === 'AbortError') msg = '请求超时或无响应';
-    else if (/Failed to fetch|NetworkError/i.test(msg)) {
-      msg = '网络请求失败：接口地址写错、被浏览器 CORS 拦截，或该站点不允许网页直连。';
-    }
-    task.kind = 'error';
-    task.status = 'fail';
-    task.message = msg;
-    task.hint = vsExplainError(msg);
-    task.elapsed = Date.now() - task.startedAt;
-    renderVs();
-    toast('视频生成失败，看右侧原因', 'err', 3600);
-  } finally {
-    state.video.running = false;
-    state.video.abort = false;
-    setVsGenerating(false);
-  }
-}
-
-async function vsPollTask(task) {
-  const v = state.cfg.video;
-  const every = clamp(Number(v.pollEvery) || 4, 1, 60) * 1000;
-  const maxMs = clamp(Number(v.pollMax) || 300, 10, 1800) * 1000;
-  const deadline = Date.now() + maxMs;
-  let attempt = 0;
-
-  while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, every));
-    if (state.video.abort) throw new Error('已取消');
-
-    attempt++;
-    let res;
-    try {
-      res = await vsFetch(vsQueryUrl(task.taskId), { method: 'GET', headers: vsHeaders(false) }, 60000);
-    } catch (e) {
-      /* 单次查询失败不当场判死，容忍几轮抖动 */
-      if (attempt <= 3) { task.elapsed = Date.now() - task.startedAt; renderVs(); continue; }
-      throw e;
-    }
-
-    task.elapsed = Date.now() - task.startedAt;
-    task.polls = attempt;
-
-    if (!res.ok) {
-      if (attempt <= 3 && (res.status === 404 || res.status >= 500)) { renderVs(); continue; }
-      throw new Error(`查询失败 HTTP ${res.status} · ${vsErrMsg(res.data, res.text)}`);
-    }
-
-    const vid = vsExtractVideoUrl(res.data) || vsExtractB64Video(res.data);
-    if (vid) {
-      task.kind = 'video';
-      task.src = vid;
-      task.cover = vsExtractCover(res.data);
-      task.status = 'done';
-      task.rawStatus = '';
-      task.message = '';
-      renderVs();
-      toast('视频已生成 🎬', 'ok', 3000);
-      return;
-    }
-
-    const raw = vsExtractStatus(res.data);
-    const st = vsNormalizeStatus(raw);
-    task.rawStatus = raw == null ? '' : String(raw);
-    task.progress = vsExtractProgress(res.data);
-    task.message = vsTaskMessage(res.data);
-
-    if (st === 'fail') {
-      const detail = task.message || (task.rawStatus ? '（' + task.rawStatus + '）' : '');
-      throw new Error('任务失败' + (detail ? '：' + detail : ''));
-    }
-    renderVs();
-  }
-  throw new Error(`等待超时（超过 ${Math.round(maxMs / 1000)} 秒仍未完成）· 任务号 ${task.taskId}`);
-}
-
-/* ---------- 渲染 ---------- */
-const _vsEls = new Map();   // id → { sig, el }，复用 DOM 节点，避免打断视频播放
-
-function vsCardSig(t) {
-  if (t.kind === 'video') return 'v:' + t.id;
-  if (t.kind === 'error') return 'e:' + t.message;
-  return 't:' + t.status + ':' + Math.floor((t.elapsed || 0) / 1000) + ':' +
-         (t.progress == null ? '' : t.progress) + ':' + (t.polls || 0) + ':' + (t.rawStatus || '');
-}
-
-function vsCardHTML(t) {
-  if (t.kind === 'video') {
-    const openLink = /^data:/.test(t.src)
-      ? ''
-      : `<a class="icon-btn" href="${esc(t.src)}" target="_blank" rel="noopener" title="新窗口打开">↗</a>`;
-    return `<div class="vcard" data-vid="${t.id}">
-      <div class="vcard-body">
-        <video src="${esc(t.src)}"${t.cover ? ` poster="${esc(t.cover)}"` : ''} controls loop playsinline preload="metadata"></video>
-        <span class="vcard-badge">⏱ ${vsDur(t.elapsed)}</span>
-      </div>
-      <div class="vcard-bar">
-        <span class="txt" title="${esc(t.prompt)}">${esc(t.prompt)}</span>
-        <button class="icon-btn" data-vact="copy" data-vid="${t.id}" title="复制提示词">⧉</button>
-        <button class="icon-btn" data-vact="download" data-vid="${t.id}" title="下载视频">⤓</button>
-        ${openLink}
-      </div>
-    </div>`;
-  }
-
-  if (t.kind === 'error') {
-    const hint = t.hint ? `<div class="vtask-hint">💡 ${esc(t.hint)}</div>` : '';
-    return `<div class="vtask fail" data-vid="${t.id}">
-      <div class="vtask-head">✕ 生成失败</div>
-      <div class="vtask-msg">${esc(t.message || '未知错误')}</div>
-      ${hint}
-      <div class="vtask-meta">耗时 ${vsDur(t.elapsed)}${t.taskId ? ' · 任务号 ' + esc(t.taskId) : ''}</div>
-      ${t.diag ? `<div class="vtask-acts"><button class="mini-btn" data-vact="diag" data-vid="${t.id}">⧉ 复制诊断信息</button></div>` : ''}
-    </div>`;
-  }
-
-  const pct = t.progress == null ? '' : ` · ${t.progress}%`;
-  const label = t.status === 'submitting' ? '正在提交任务…' : '正在生成视频…';
-  const meta = [
-    '已等待 ' + vsDur(t.elapsed),
-    t.rawStatus ? '状态 ' + esc(t.rawStatus) : '',
-    t.taskId ? '任务 ' + esc(t.taskId) : '',
-    t.polls ? '第 ' + t.polls + ' 次查询' : '',
-  ].filter(Boolean).join(' · ');
-  return `<div class="vtask" data-vid="${t.id}">
-    <div class="vtask-head"><span class="vtask-spin"></span>${label}${pct}</div>
-    <div class="vtask-bar"><i></i></div>
-    <div class="vtask-meta">${meta}</div>
-    <div class="vtask-meta" style="opacity:.75">${esc(String(t.prompt || '').slice(0, 100))}</div>
-  </div>`;
-}
-
-function renderVs() {
-  const tasks = state.video.tasks;
-  const list = els.vsList;
-
-  els.vsCount.textContent = tasks.filter(t => t.kind === 'video').length;
-  const has = tasks.length > 0;
-  els.vsEmpty.hidden = has;
-  list.hidden = !has;
-  if (!has) { list.innerHTML = ''; _vsEls.clear(); return; }
-
-  tasks.forEach(t => {
-    const sig = vsCardSig(t);
-    let rec = _vsEls.get(t.id);
-    if (!rec || rec.sig !== sig || !rec.el.isConnected) {
-      const tmp = document.createElement('div');
-      tmp.innerHTML = vsCardHTML(t);
-      const el = tmp.firstElementChild;
-      if (rec && rec.el.isConnected) rec.el.replaceWith(el);
-      rec = { sig, el };
-      _vsEls.set(t.id, rec);
-    }
-    list.appendChild(rec.el);   // 复用同一节点 → 不会打断正在播放的视频
-  });
-
-  const alive = new Set(tasks.map(t => t.id));
-  Array.from(list.children).forEach(el => { if (!alive.has(el.dataset.vid)) el.remove(); });
-  Array.from(_vsEls.keys()).forEach(k => { if (!alive.has(k)) _vsEls.delete(k); });
-}
-
-/* 一键复制诊断信息（把 base64 首帧图省略，方便发给中转站客服） */
-function vsCopyDiag(t) {
-  const d = t.diag || {};
-  const p = {};
-  Object.keys(d.payload || {}).forEach(k => {
-    const val = d.payload[k];
-    if (typeof val === 'string' && val.length > 120) p[k] = val.slice(0, 48) + `…（已省略 ${val.length} 字符）`;
-    else p[k] = val;
-  });
-  const txt = [
-    '【Prompt Painter · 视频生成诊断】',
-    '时间：' + new Date(t.startedAt || Date.now()).toLocaleString(),
-    '请求：POST ' + (d.url || '（未记录）'),
-    '格式：' + (d.format || 'json') + '　模型：' + (d.model || '（空）'),
-    '',
-    '请求体：',
-    JSON.stringify(p, null, 2),
-    '',
-    '报错原文：' + (t.message || ''),
-  ].join('\n');
-  copyText(txt)
-    .then(() => toast('诊断信息已复制，可直接发给站点客服', 'ok', 3200))
-    .catch(() => toast('复制失败', 'err'));
-}
-
-async function vsDownload(task) {
-  const d = new Date();
-  const p = n => String(n).padStart(2, '0');
-  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-  const ok = await downloadImage(task.src, `video-${stamp}.mp4`);
-  if (!ok) toast('直接下载被跨域拦截，已新窗口打开，请右键另存', 'warn', 4000);
-}
-
-function vsClearResults() {
-  if (state.video.running) { toast('正在生成中，先取消再清空', 'warn'); return; }
-  state.video.tasks = [];
-  _vsEls.clear();
-  renderVs();
-}
-
-/* ---------- 参考图（图生视频首帧） ---------- */
-function renderVsRef() {
-  const v = state.cfg.video;
-  const isI2V = v.mode === 'i2v';
-  els.vsRefBlock.hidden = !isI2V;
-  if (!isI2V) return;
-
-  const ref = state.video.ref;
-  const has = !!(ref && ref.dataUrl);
-  els.vsDrop.classList.toggle('hidden', has);
-  els.vsRefCard.hidden = !has;
-  if (!has) return;
-  els.vsRefThumb.src = ref.dataUrl;
-  els.vsRefName.textContent = ref.name || 'frame.png';
-  els.vsRefSize.textContent = `${ref.width}×${ref.height} · ${(ref.size / 1024).toFixed(0)} KB`;
-}
-
-async function vsHandleFile(file) {
-  try {
-    const ref = await readImageFile(file);
-    state.video.ref = ref;
-    renderVsRef();
-    toast(`首帧已载入 · ${ref.width}×${ref.height}`, 'ok', 2200);
-  } catch (e) {
-    toast('载入失败：' + (e.message || e), 'err', 3400);
-  }
-}
-
-function vsSetMode(mode) {
-  state.cfg.video.mode = mode === 'i2v' ? 'i2v' : 't2v';
-  persist.cfg();
-  $$('.vs-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.vmode === state.cfg.video.mode));
-  renderVsRef();
-}
-
-/* ---------- 接口配置 ---------- */
-function updateVsCustomSize() {
-  els.vsCustomSize.hidden = state.cfg.video.size !== '__custom__';
-}
-
-function updateVsPill(force) {
-  const v = state.cfg.video;
-  const pill = els.vsApiPill;
-  if (!pill) return;
-  if (force === 'on')  { pill.dataset.state = 'on';  pill.textContent = '已连接'; return; }
-  if (force === 'err') { pill.dataset.state = 'err'; pill.textContent = '连接异常'; return; }
-  if (!v.baseUrl) { pill.dataset.state = 'off'; pill.textContent = '接口未配置'; return; }
-  if (v.auth !== 'none' && !String(v.apiKey || '').trim()) {
-    pill.dataset.state = 'off'; pill.textContent = '缺少 API Key'; return;
-  }
-  pill.dataset.state = 'on';
-  pill.textContent = '已配置 · ' + (v.model || '未选模型');
-}
-
-const VS_KEYS = [
-  ['vsBaseUrl', 'baseUrl', 'text'],
-  ['vsApiKey', 'apiKey', 'text'],
-  ['vsModel', 'model', 'text'],
-  ['vsSubmitPath', 'submitPath', 'text'],
-  ['vsQueryPath', 'queryPath', 'text'],
-  ['vsFormat', 'format', 'text'],
-  ['vsAuth', 'auth', 'text'],
-  ['vsPollEvery', 'pollEvery', 'num'],
-  ['vsPollMax', 'pollMax', 'num'],
-  ['vsSize', 'size', 'text'],
-  ['vsSeconds', 'seconds', 'text'],
-  ['vsFps', 'fps', 'text'],
-  ['vsSeed', 'seed', 'text'],
-  ['vsNegative', 'negative', 'text'],
-  ['vsMapSize', 'mapSize', 'text'],
-  ['vsMapDuration', 'mapDuration', 'text'],
-  ['vsMapImage', 'mapImage', 'text'],
-  ['vsMapNegative', 'mapNegative', 'text'],
-  ['vsExtraJson', 'extraJson', 'text'],
-  ['vsW', 'customW', 'num'],
-  ['vsH', 'customH', 'num'],
-];
-const VS_BOOLS = [['vsDebug', 'debug']];
-
-function vsSettingsToUI() {
-  const v = state.cfg.video;
-  VS_KEYS.forEach(([elId, key, kind]) => {
-    const el = $('#' + elId);
-    if (!el) return;
-    const val = v[key];
-    el.value = (val == null) ? '' : val;
-    if (kind === 'num' && el.value === '') el.value = '';
-  });
-  VS_BOOLS.forEach(([elId, key]) => {
-    const el = $('#' + elId);
-    if (el) el.checked = !!v[key];
-  });
-  $$('.vs-seg-btn').forEach(b => b.classList.toggle('active', b.dataset.vmode === v.mode));
-  if (els.vsPrompt) els.vsPrompt.value = v.prompt || '';
-  updateVsCustomSize();
-  renderVsRef();
-  updateVsPill();
-}
-
-/* 一键把画图接口的地址与 Key 搬过来 */
-function vsReuseImageApi() {
-  const c = state.cfg, v = c.video;
-  let n = 0;
-  if (String(c.baseUrl || '').trim()) { v.baseUrl = c.baseUrl; n++; }
-  if (String(c.apiKey || '').trim()) { v.apiKey = c.apiKey; n++; }
-  if (!n) { toast('画图接口还没填，先填那边再复制过来', 'warn', 3400); return; }
-  persist.cfg();
-  vsSettingsToUI();
-  toast(`已从画图接口复制 ${n} 项配置`, 'ok', 2400);
-}
-
-/* 反向：把视频接口配置同步回画图 */
-function vsSyncToImageApi() {
-  const c = state.cfg, v = c.video;
-  if (!String(v.baseUrl || '').trim()) { toast('视频接口地址还是空的', 'warn'); return; }
-  c.baseUrl = v.baseUrl;
-  if (String(v.apiKey || '').trim()) c.apiKey = v.apiKey;
-  persist.cfg();
-  settingsToUI();
-  toast('已同步给画图接口', 'ok', 2400);
-}
-
-function vsExtractModels(data) {
-  const arr = (data && (data.data || data.models || data.result)) || (Array.isArray(data) ? data : []);
-  if (!Array.isArray(arr)) return [];
-  return arr.map(m => (typeof m === 'string' ? m : (m && (m.id || m.name || m.model)))).filter(Boolean);
-}
-
-async function vsTestConn() {
-  const out = els.vsTestResult;
-  const base = vsBase();
-  if (!base) { out.className = 'test-result err'; out.textContent = '请先填写接口地址'; return; }
-  out.className = 'test-result';
-  out.textContent = '正在探测…';
-  const url = /\/models$/.test(base) ? base : base + '/models';
-  try {
-    const res = await vsFetch(url, { method: 'GET', headers: vsHeaders(false) }, 30000);
-    if (res.ok) {
-      const list = vsExtractModels(res.data);
-      out.className = 'test-result ok';
-      out.textContent = list.length
-        ? `连接成功 · 发现 ${list.length} 个模型（点「获取模型」可拉取）`
-        : '连接成功 ✓';
-      updateVsPill('on');
-    } else {
-      out.className = 'test-result err';
-      out.textContent = `接口可达，但 /models 返回 HTTP ${res.status}：${vsErrMsg(res.data, res.text).slice(0, 160)}`;
-    }
-  } catch (e) {
-    out.className = 'test-result err';
-    out.textContent = '连接失败：' + (e.name === 'AbortError' ? '超时' : (e.message || e)) +
-      '（部分服务商不提供 /models，可忽略此项直接试生成）';
-  }
-}
-
-async function vsFetchModels() {
-  const base = vsBase();
-  if (!base) { toast('请先填写视频接口地址', 'warn'); return; }
-  const btn = els.vsFetchModelsBtn;
-  const orig = btn.textContent;
-  btn.disabled = true; btn.textContent = '拉取中…';
-  try {
-    const url = /\/models$/.test(base) ? base : base + '/models';
-    const res = await vsFetch(url, { method: 'GET', headers: vsHeaders(false) }, 30000);
-    if (!res.ok) throw new Error(`HTTP ${res.status} · ${vsErrMsg(res.data, res.text).slice(0, 160)}`);
-    const models = vsExtractModels(res.data);
-    if (!models.length) throw new Error('返回里没有模型列表');
-    $('#vsModelPresets').innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
-    els.vsModelHint.textContent = `已获取 ${models.length} 个模型，点输入框可下拉选择`;
-    toast(`已获取 ${models.length} 个模型`, 'ok', 2600);
-  } catch (e) {
-    toast('获取失败：' + (e.message || e), 'err', 3800);
-  } finally {
-    btn.disabled = false; btn.textContent = orig;
-  }
-}
-
-/* ---------- 开关与事件 ---------- */
-function openVideo() {
-  closeMoreMenu();
-  closeDrawers();
-  els.vstudio.hidden = false;
-  vsSettingsToUI();
-  renderVs();
-}
-
-function closeVideo() {
-  els.vstudio.hidden = true;
-}
-
-function bindVideoEvents() {
-  $('#btnVideo').addEventListener('click', openVideo);
-  els.vsClose.addEventListener('click', closeVideo);
-  els.vstudio.addEventListener('click', e => { if (e.target === els.vstudio) closeVideo(); });
-
-  /* 模式切换 */
-  els.vsMode.addEventListener('click', e => {
-    const b = e.target.closest('[data-vmode]');
-    if (b) vsSetMode(b.dataset.vmode);
-  });
-
-  /* 首帧图 */
-  els.vsDrop.addEventListener('click', () => els.vsFile.click());
-  els.vsFile.addEventListener('change', e => {
-    const f = e.target.files && e.target.files[0];
-    if (f) vsHandleFile(f);
-    e.target.value = '';
-  });
-  ['dragenter', 'dragover'].forEach(ev => els.vsDrop.addEventListener(ev, e => {
-    e.preventDefault(); els.vsDrop.classList.add('over');
-  }));
-  ['dragleave', 'drop'].forEach(ev => els.vsDrop.addEventListener(ev, e => {
-    e.preventDefault(); els.vsDrop.classList.remove('over');
-  }));
-  els.vsDrop.addEventListener('drop', e => {
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) vsHandleFile(f);
-  });
-  $('#vsRefRemove').addEventListener('click', () => {
-    state.video.ref = null;
-    if (els.vsFile) els.vsFile.value = '';
-    renderVsRef();
-  });
-
-  /* 提示词 */
-  els.vsPrompt.addEventListener('input', debounce(() => {
-    state.cfg.video.prompt = els.vsPrompt.value;
-    persist.cfg();
-  }, 400));
-  els.vsPrompt.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); onVsGenerateClick(); }
-  });
-  $('#vsPullPrompt').addEventListener('click', () => {
-    const t = els.promptBox.value.trim();
-    if (!t) { toast('主对话框还是空的', 'warn'); return; }
-    els.vsPrompt.value = t;
-    state.cfg.video.prompt = t;
-    persist.cfg();
-    toast('已取用主对话框的提示词', 'ok', 2000);
-  });
-
-  /* 生成 */
-  els.vsGenerate.addEventListener('click', onVsGenerateClick);
-  $('#vsClearAll').addEventListener('click', vsClearResults);
-
-  /* 结果卡片操作 */
-  els.vsList.addEventListener('click', e => {
-    const btn = e.target.closest('[data-vact]');
-    if (!btn) return;
-    const t = state.video.tasks.find(x => x.id === btn.dataset.vid);
-    if (!t) return;
-    if (btn.dataset.vact === 'copy') {
-      copyText(t.prompt).then(() => toast('提示词已复制', 'ok')).catch(() => toast('复制失败', 'err'));
-    } else if (btn.dataset.vact === 'diag') {
-      vsCopyDiag(t);
-    } else if (btn.dataset.vact === 'download') {
-      vsDownload(t);
-    }
-  });
-
-  /* 配置项 */
-  VS_KEYS.forEach(([elId, key, kind]) => {
-    const el = $('#' + elId);
-    if (!el) return;
-    const sync = () => {
-      state.cfg.video[key] = kind === 'num' ? Number(el.value) : el.value;
-      persist.cfg();
-      if (elId === 'vsSize') updateVsCustomSize();
-      updateVsPill();
-    };
-    el.addEventListener('input', sync);
-    el.addEventListener('change', sync);
-  });
-  VS_BOOLS.forEach(([elId, key]) => {
-    const el = $('#' + elId);
-    if (!el) return;
-    el.addEventListener('change', () => { state.cfg.video[key] = el.checked; persist.cfg(); });
-  });
-
-  $('#vsReuseImg').addEventListener('click', vsReuseImageApi);
-  $('#vsSyncBack').addEventListener('click', vsSyncToImageApi);
-  $('#vsTest').addEventListener('click', vsTestConn);
-  els.vsFetchModelsBtn.addEventListener('click', vsFetchModels);
-}
-
 /* ---------------- 主题 / 抽屉 ---------------- */
 function applyTheme(t) {
   state.ui.theme = t;
   document.documentElement.dataset.theme = t;
   $('#btnTheme').textContent = t === 'dark' ? '☀' : '◐';
-  // PWA 浏览器框 / 状态栏颜色跟随主题
+  // 浏览器地址栏 / 状态栏颜色跟随主题
   const meta = document.querySelector('#metaThemeColor');
   if (meta) meta.setAttribute('content', t === 'dark' ? '#12141c' : '#5b5bd6');
 }
@@ -4149,12 +3221,6 @@ function init() {
   els.modalBody = $('#modalBody');
   els.apiTestResult = $('#apiTestResult');
   els.ghResult = $('#ghResult');
-  els.updateBar = $('#updateBar');
-  els.updateText = $('#updateText');
-  els.updateResult = $('#updateResult');
-  els.appVerNow = $('#appVerNow');
-  els.appModeNow = $('#appModeNow');
-  els.appOfflineNow = $('#appOfflineNow');
   els.debugPre = $('#debugPre');
   els.storeStat = $('#storeStat');
   els.comboInfo = $('#comboInfo');
@@ -4187,33 +3253,6 @@ function init() {
   els.charCount = $('#charCount');
   els.tokenEst = $('#tokenEst');
 
-  /* 视频工作台 */
-  els.vstudio = $('#vstudio');
-  els.vsClose = $('#vsClose');
-  els.vsApiPill = $('#vsApiPill');
-  els.vsMode = $('#vsMode');
-  els.vsRefBlock = $('#vsRefBlock');
-  els.vsDrop = $('#vsDrop');
-  els.vsFile = $('#vsFile');
-  els.vsRefCard = $('#vsRefCard');
-  els.vsRefThumb = $('#vsRefThumb');
-  els.vsRefName = $('#vsRefName');
-  els.vsRefSize = $('#vsRefSize');
-  els.vsPrompt = $('#vsPrompt');
-  els.vsCustomSize = $('#vsCustomSize');
-  els.vsList = $('#vsList');
-  els.vsEmpty = $('#vsEmpty');
-  els.vsCount = $('#vsCount');
-  els.vsProgress = $('#vsProgress');
-  els.vsGenerate = $('#vsGenerate');
-  els.vsInput = $('.vs-input');
-  els.vsAccCfg = $('#vsAccCfg');
-  els.vsAccAdv = $('#vsAccAdv');
-  els.vsTestResult = $('#vsTestResult');
-  els.vsDebugPre = $('#vsDebugPre');
-  els.vsModelHint = $('#vsModelHint');
-  els.vsFetchModelsBtn = $('#vsFetchModels');
-
   loadAll();
   applyTheme(state.ui.theme);
   els.libSort.value = state.ui.sort;
@@ -4221,8 +3260,6 @@ function init() {
   settingsToUI();
   bindSettings();
   bindEvents();
-  bindVideoEvents();
-  vsSettingsToUI();
 
   renderLib();
   renderSizeGrid();
@@ -4259,7 +3296,7 @@ function init() {
   // 首次使用引导
   if (!store.read('pp.seen.v1', false)) {
     store.write('pp.seen.v1', true);
-    setTimeout(() => openModal('欢迎来到 Prompt Painter 🎨', HELP_HTML), 400);
+    setTimeout(() => openModal('欢迎来到 欧阳画板 🎨', HELP_HTML), 400);
   }
 
   // 示例库有更新时，提示老用户一键升级（不覆盖已有内容）
@@ -4294,220 +3331,6 @@ function init() {
       }
     }, 800);
   }
-
-  /* PWA：注册更新通道 + 处理桌面快捷方式入口 */
-  setupPWA();
-  handleLaunchIntent();
-}
-
-/* ============================================================
-   PWA：Service Worker / 应用内更新 / 安装引导
-   —— 「安装形态」下断网可用，新版本发布后横幅提示、一键切换
-   ============================================================ */
-const PWA_OK = 'serviceWorker' in navigator &&
-  (location.protocol === 'https:' ||
-   location.hostname === 'localhost' || location.hostname === '127.0.0.1');
-
-let pwaReg = null;           // ServiceWorkerRegistration
-let updateWaiting = null;    // 处于 waiting 的新版本 SW
-let deferredInstall = null;  // beforeinstallprompt 事件
-let pwaReloaded = false;     // 防止 controllerchange 重复刷新
-let expectReload = false;    // 仅「用户确认更新」后才允许自动刷新
-let updateFoundFlag = false; // checkForUpdate 轮询用
-
-function isStandalone() {
-  return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-}
-
-/* 问一个 SW 它的版本号（新 SW 在 waiting 态也能收消息） */
-function swVersion(worker) {
-  return new Promise((resolve) => {
-    if (!worker || !worker.postMessage) return resolve('');
-    let done = false;
-    const ch = new MessageChannel();
-    ch.port1.onmessage = (e) => { done = true; resolve((e.data && e.data.v) || ''); };
-    try { worker.postMessage({ type: 'GET_VERSION' }, [ch.port2]); }
-    catch (e) { return resolve(''); }
-    setTimeout(() => { if (!done) resolve(''); }, 1200);
-  });
-}
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-function showUpdateBar() {
-  if (!updateWaiting) return;
-  swVersion(updateWaiting).then(v => {
-    els.updateText.textContent = v ? `新版本 v${v} 已就绪，点击立即切换`
-                                   : '发现新版本，已就绪';
-  });
-  els.updateBar.hidden = false;
-}
-
-function watchRegistration(reg) {
-  reg.addEventListener('updatefound', () => {
-    updateFoundFlag = true;
-    const nw = reg.installing;
-    if (!nw) return;
-    nw.addEventListener('statechange', () => {
-      /* 首次安装（无 controller）不算更新，不打扰 */
-      if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-        updateWaiting = nw;
-        showUpdateBar();
-        renderAppInfo();
-      }
-    });
-  });
-  /* 上次点了「稍后」的 waiting，打开页面时继续提示 */
-  if (reg.waiting && navigator.serviceWorker.controller) {
-    updateWaiting = reg.waiting;
-    showUpdateBar();
-  }
-}
-
-async function setupPWA() {
-  if (!PWA_OK) { renderAppInfo(); return; }
-  try {
-    pwaReg = await navigator.serviceWorker.register(
-      './sw.js?v=' + APP_VERSION, { updateViaCache: 'none' }
-    );
-  } catch (e) { renderAppInfo(); return; }
-
-  watchRegistration(pwaReg);
-
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    /* 首次安装时 clients.claim() 也会触发本事件——那时不该刷新。
-       只有用户点了「立即更新」（expectReload）才切换。 */
-    if (!expectReload || pwaReloaded) return;
-    pwaReloaded = true;
-    location.reload();   // 新 SW 接管，刷新以加载新缓存的外壳
-  });
-
-  renderAppInfo();
-}
-
-/* 手动检查更新：reg.update() 后轮询等待安装落地 */
-async function checkForUpdate() {
-  const out = els.updateResult;
-  const set = (cls, html) => { out.className = 'test-result ' + cls; out.innerHTML = html; };
-
-  if (!('serviceWorker' in navigator)) {
-    set('err', '当前浏览器不支持应用内更新（缺少 Service Worker）');
-    return false;
-  }
-  const reg = pwaReg || await navigator.serviceWorker.getRegistration();
-  if (!reg) {
-    set('err', '更新通道未启用——当前像是直接打开本地文件。部署到 https（如 GitHub Pages）后访问一次即可启用。');
-    return false;
-  }
-
-  set('busy', '正在检查更新…');
-  updateWaiting = null;
-  updateFoundFlag = false;
-  const onFound = () => { updateFoundFlag = true; };
-  reg.addEventListener('updatefound', onFound);
-
-  /* 不阻塞在 reg.update() 上——它什么时候 resolve 不可控。
-     改为「发现新版本」或「2.5 秒内没有」二者竞速，用户最多等 2.5s 就有结论。 */
-  await Promise.race([
-    new Promise(res => reg.addEventListener('updatefound', () => res(true), { once: true })),
-    sleep(2500),
-  ]);
-  reg.update().catch(() => {});
-  reg.removeEventListener('updatefound', onFound);
-
-  let nw = reg.waiting || reg.installing;
-  if (nw && nw.state !== 'installed') {
-    for (let i = 0; i < 30 && nw.state === 'installing'; i++) {
-      await sleep(400);
-      if (nw.state === 'redundant') { nw = null; break; }
-    }
-  }
-
-  if (nw && nw.state === 'installed') {
-    updateWaiting = nw;
-    const v = await swVersion(nw);
-    set('ok', `🎉 发现新版本 <b>v${esc(v || '?')}</b>，已就绪，点击顶部横幅即可切换`);
-    showUpdateBar();
-    return true;
-  }
-  if (updateFoundFlag || nw) {
-    set('busy', '新版本正在后台下载，就绪后会自动提示…');
-    return true;
-  }
-
-  /* 没有新 SW，说明当前运行的已是最新（其版本就是注册时用的 APP_VERSION） */
-  set('ok', `✓ 已是最新版本 <b>v${esc(APP_VERSION)}</b>`);
-  return false;
-}
-
-function applyUpdateNow() {
-  if (!updateWaiting) { els.updateBar.hidden = true; return; }
-  els.updateText.textContent = '正在切换到新版本…';
-  expectReload = true;
-  updateWaiting.postMessage('SKIP_WAITING');
-  /* 新 SW activate 后 clients.claim → controllerchange → 自动刷新 */
-}
-
-function renderAppInfo() {
-  if (!els.appVerNow) return;
-  els.appVerNow.textContent = 'v' + APP_VERSION;
-  const stand = isStandalone();
-  els.appModeNow.textContent = stand ? '已安装为应用' : '浏览器标签';
-  els.appOfflineNow.textContent = (PWA_OK && pwaReg) ? '已启用 ✓' : '未启用（需 https 或 localhost）';
-  const btnInstall = $('#btnInstallApp');
-  if (!btnInstall) return;
-  if (stand) {
-    btnInstall.textContent = '✓ 已安装';
-    btnInstall.disabled = true;
-  } else {
-    btnInstall.textContent = deferredInstall ? '📲 安装到设备' : '📲 查看安装方法';
-    btnInstall.disabled = false;
-  }
-}
-
-function installApp() {
-  if (isStandalone()) return;
-  if (deferredInstall) {
-    deferredInstall.prompt();
-    deferredInstall.userChoice.then(({ outcome }) => {
-      if (outcome === 'accepted') toast('安装成功！可从桌面 / 主屏幕打开', 'ok', 3200);
-      deferredInstall = null;
-      renderAppInfo();
-    }).catch(() => { renderAppInfo(); });
-  } else {
-    openModal('安装到设备 📲', INSTALL_HELP_HTML);
-  }
-}
-
-const INSTALL_HELP_HTML = `
-  <p>把 Prompt Painter 装成独立 App，全屏运行、离线可用：</p>
-  <div class="app-install-tips">
-    <div><b>🖥 桌面 Chrome / Edge</b><br>地址栏右侧的「安装」图标 ⬇，或菜单 → 「安装 Prompt Painter」</div>
-    <div><b>🤖 安卓 Chrome</b><br>菜单 ⋮ → 「添加到主屏幕」或「安装应用」</div>
-    <div><b>🍎 iPhone / iPad（Safari）</b><br>底部「分享」按钮 → 「添加到主屏幕」</div>
-  </div>
-  <p style="margin-top:10px;color:var(--text-3);font-size:12px">安装后数据仍在设备本地；词库云同步与跨设备迁移照常可用。</p>
-`;
-
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredInstall = e;
-  renderAppInfo();
-});
-window.addEventListener('appinstalled', () => {
-  deferredInstall = null;
-  toast('安装成功！可从桌面 / 主屏幕打开', 'ok', 3200);
-  renderAppInfo();
-});
-
-/* manifest shortcuts（长按图标菜单）落地的 ?go= 快捷入口 */
-function handleLaunchIntent() {
-  const go = new URLSearchParams(location.search).get('go');
-  if (!go) return;
-  setTimeout(() => {
-    if (go === 'video') $('#btnVideo')?.click();
-    if (go === 'matrix') openMatrix();
-  }, 600);
 }
 
 if (document.readyState === 'loading') {
