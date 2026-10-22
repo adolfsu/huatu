@@ -3242,16 +3242,17 @@ async function translatePrompt() {
 const AI_REQ_MAX = 2000;
 
 const AI_WRITE_SYSTEM = [
-  'You are a senior prompt engineer for AI image generation.',
-  'Turn the user idea into ONE ready-to-use English prompt for a text-to-image model.',
+  '你是资深的 AI 绘图提示词工程师。',
+  '把用户的创作要求整理成一条可以直接用于文生图 / 图生图的中文提示词。',
   '',
-  'Rules:',
-  '- Understand the intent first, then add only details that agree with it: subject features, appearance and clothing, action and pose, environment, lighting, composition, camera and lens, materials, and small visual details.',
-  '- Never change the subject, the scene, or the art style the user asked for. Never invent a specific real person or brand.',
-  '- If the user specifies on-image text, aspect ratio, art style or other explicit requirements, keep them faithfully.',
-  '- Output format: a single line of comma-separated English keywords and short phrases. No line breaks.',
-  '- Keep it about 40-80 words. Prefer concrete visual detail over stacked quality buzzwords.',
-  '- Output ONLY the prompt. No explanation, no title, no numbering, no Markdown, no code fences, no surrounding quotes.',
+  '要求：',
+  '- 默认用简体中文输出完整提示词；不要输出英文提示词，也不要中英混排（专有名词、型号、用户指定保留的原文除外）。',
+  '- 先理解用户想画什么，再补充与之一致的细节：主体特征、外观与服装、动作与表情、环境背景、光线与氛围、构图与视角、镜头语言、材质与画面细节。',
+  '- 不得擅自改变用户明确指定的主体、场景、艺术风格、画面文字、比例等要求。',
+  '- 不要无依据地堆砌形容词，也不要添加用户没有要求的人物、品牌或元素。',
+  '- 输出格式：逗号分隔的单行中文提示词，不要换行。',
+  '- 长度约 60-120 个汉字，具体、可读、便于用户自己修改，具体细节优先于华丽辞藻。',
+  '- 只输出提示词本身：不要解释、不要标题、不要编号、不要 Markdown、不要代码块、不要加引号。',
 ].join('\n');
 
 /* 输出清理：去围栏 / 前缀 / 编号 / 多余换行，最后交给 normalizePrompt 收尾。
@@ -3275,9 +3276,10 @@ function sanitizePromptOut(text) {
     .filter(Boolean);
 
   // 4) 去掉整体被引号/反引号包裹的外壳；并清掉合并后仍残留的「, 2. 」式行内编号
+  //    （分隔符同时认半角逗号与中文逗号，中文输出里编号常写成「，2. xxx」）
   s = lines.join(', ')
-    .replace(/(^|,\s*)\d{1,2}\s*[.、)]\s+/g, '$1')
-    .replace(/(^|,\s*)\(\d{1,2}\)\s*/g, '$1')
+    .replace(/(^|[,，]\s*)\d{1,2}\s*[.、)]\s+/g, '$1')
+    .replace(/(^|[,，]\s*)\(\d{1,2}\)\s*/g, '$1')
     .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
     .trim();
 
@@ -3290,7 +3292,7 @@ function aiPanelHTML() {
     <div class="field">
       <label>你想画什么</label>
       <textarea id="aiReq" rows="4" placeholder="例：画一只穿机甲的橘猫，站在赛博朋克城市的雨夜街头，电影级光影" spellcheck="false"></textarea>
-      <small>用日常语言描述即可，AI 会补全细节并整理成可直接绘图的英文提示词</small>
+      <small>用日常语言描述即可，AI 会补全细节并整理成可直接绘图的中文提示词</small>
     </div>
     <div class="ai-actions">
       <button class="btn tiny primary" id="aiRun">生成提示词</button>
