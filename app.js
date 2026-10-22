@@ -239,6 +239,12 @@ const state = {
     rows: [],           // [{ id, a, b, text, on }]
     running: false,
   },
+  ai: {                 // AI 帮写（仅内存态，关掉面板再打开可恢复）
+    req: '',            // 创作要求
+    result: '',         // 生成结果
+    busy: false,
+    ctrl: null,         // 进行中请求的 AbortController
+  },
 };
 
 function defaultCfg() {
@@ -1848,11 +1854,15 @@ function markSizeActive() {
    弹窗 / 灯箱
    ============================================================ */
 function openModal(title, html) {
+  abortAiRequest();          // 面板被替换/重开时，先中止 AI 帮写未完成的请求
   els.modalTitle.textContent = title;
   els.modalBody.innerHTML = html + `<div class="ver-badge">欧阳画板 v${APP_VERSION}</div>`;
   els.modal.hidden = false;
 }
-function closeModal() { els.modal.hidden = true; }
+function closeModal() {
+  abortAiRequest();          // 关闭面板时中止请求，避免后台继续跑
+  els.modal.hidden = true;
+}
 
 function openLightbox(src, prompt) {
   els.lbImg.src = src;
@@ -2229,6 +2239,7 @@ function bindEvents() {
     toast('已复用画图接口地址', 'ok', 1500);
   });
   $('#btnTranslate').addEventListener('click', translatePrompt);
+  $('#btnAiWrite').addEventListener('click', openAiWrite);
 
   /* --- Tab --- */
   $$('.tab').forEach(t => t.addEventListener('click', () => {
@@ -3067,10 +3078,102 @@ function handleMoreAction(action) {
     case 'download': $('#btnDownloadMode').click(); break;
     case 'img2img':  $('#btnImg2Img').click(); break;
     case 'translate': translatePrompt(); break;
+    case 'aiwrite':  openAiWrite(); break;
     case 'clear':    $('#btnClearPrompt').click(); break;
     case 'undo':     undoAppend(); break;
     case 'help':     openModal('使用说明', HELP_HTML); break;
     case 'close':    break;
+  }
+}
+
+/* ============================================================
+   LLM 对话接口（翻译 / AI 帮写共用）
+   —— 配置沿用「翻译」那一组：trBaseUrl / trApiKey / trModel
+   —— 留空时回退到画图接口的地址与 Key，不新增独立配置项
+   ============================================================ */
+function resolveLlm() {
+  return {
+    base: (state.cfg.trBaseUrl || state.cfg.baseUrl || '').trim().replace(/\/+$/, ''),
+    key:  (state.cfg.trApiKey   || state.cfg.apiKey   || '').trim(),
+    model: (state.cfg.trModel || 'gpt-4o-mini').trim(),
+  };
+}
+
+function chatEndpoint(base) {
+  return /\/chat\/completions$/.test(base) ? base : base + '/chat/completions';
+}
+
+/* 兼容 OpenAI 风格 choices[].message.content 与部分站点的 output_text */
+function extractChatText(data) {
+  let out = '';
+  if (data && data.choices && data.choices[0]) {
+    out = data.choices[0].message?.content || data.choices[0].text || '';
+  } else if (data && data.output_text) out = data.output_text;
+  return String(out || '').trim().replace(/^["']|["']$/g, '');
+}
+
+/**
+ * 统一对话请求。失败时抛出带 HTTP 状态与服务商原话的错误。
+ * @param {object} o { system, user, temperature, timeoutMs, signal }
+ * @returns {Promise<string>} 已 trim 的文本（可能为空串，由调用方判定）
+ */
+async function callChat(o = {}) {
+  const { base, key, model } = resolveLlm();
+  if (!base || !key) {
+    const err = new Error('还没配置对话接口');
+    err.code = 'NO_CONFIG';
+    throw err;
+  }
+
+  const timeoutMs = o.timeoutMs == null ? 60000 : o.timeoutMs;
+  const ctrl = new AbortController();
+  let timer = null;
+  let timedOut = false;
+  const onAbort = () => ctrl.abort();
+  if (o.signal) {
+    if (o.signal.aborted) ctrl.abort();
+    else o.signal.addEventListener('abort', onAbort);
+  }
+  if (timeoutMs > 0) timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+
+  try {
+    const res = await fetch(chatEndpoint(base), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + key,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: o.system || '' },
+          { role: 'user', content: o.user || '' },
+        ],
+        temperature: o.temperature == null ? 0.2 : o.temperature,
+      }),
+      signal: ctrl.signal,
+    });
+
+    if (!res.ok) {
+      const t = await res.text();
+      let msg = `HTTP ${res.status}`;
+      try { const d = JSON.parse(t); msg += ' · ' + (d.error?.message || d.message || '').slice(0, 160); }
+      catch (e) { msg += ' · ' + t.slice(0, 160); }
+      throw new Error(msg);
+    }
+
+    return extractChatText(await res.json());
+  } catch (e) {
+    /* 超时：保持与改造前一致的错误形态，方便上层文案不变 */
+    if (timedOut) {
+      const err = new Error('signal timed out');
+      err.name = 'TimeoutError';
+      throw err;
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (o.signal) o.signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -3086,10 +3189,7 @@ async function translatePrompt() {
   // 纯英文则跳过
   if (!/[\u4e00-\u9fa5]/.test(raw)) { toast('提示词里没有中文，无需翻译', '', 2000); return; }
 
-  const base = (state.cfg.trBaseUrl || state.cfg.baseUrl || '').trim().replace(/\/+$/, '');
-  const key  = (state.cfg.trApiKey   || state.cfg.apiKey   || '').trim();
-  const model = (state.cfg.trModel || 'gpt-4o-mini').trim();
-
+  const { base, key } = resolveLlm();
   if (!base || !key) {
     toast('请先在设置 →「翻译」里配置接口（或点「同画图」复用画图 Key）', 'warn', 3800);
     const acc = document.getElementById('accTranslate');
@@ -3103,38 +3203,7 @@ async function translatePrompt() {
   btn.disabled = true;
 
   try {
-    const url = /\/chat\/completions$/.test(base) ? base : base + '/chat/completions';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: TR_SYSTEM },
-          { role: 'user', content: raw },
-        ],
-        temperature: 0.2,
-      }),
-      signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined,
-    });
-
-    if (!res.ok) {
-      const t = await res.text();
-      let msg = `HTTP ${res.status}`;
-      try { const d = JSON.parse(t); msg += ' · ' + (d.error?.message || d.message || '').slice(0, 160); }
-      catch (e) { msg += ' · ' + t.slice(0, 160); }
-      throw new Error(msg);
-    }
-
-    const data = await res.json();
-    let out = '';
-    if (data.choices && data.choices[0]) {
-      out = data.choices[0].message?.content || data.choices[0].text || '';
-    } else if (data.output_text) out = data.output_text;
-    out = String(out || '').trim().replace(/^["']|["']$/g, '');
+    const out = await callChat({ system: TR_SYSTEM, user: raw, temperature: 0.2, timeoutMs: 60000 });
 
     if (!out) throw new Error('接口返回为空');
 
@@ -3164,6 +3233,305 @@ async function translatePrompt() {
     btn.textContent = orig;
     btn.disabled = false;
   }
+}
+
+/* ============================================================
+   AI 帮写提示词
+   —— 复用翻译那套 LLM 配置（resolveLlm / callChat），独立系统提示词
+   ============================================================ */
+const AI_REQ_MAX = 2000;
+
+const AI_WRITE_SYSTEM = [
+  'You are a senior prompt engineer for AI image generation.',
+  'Turn the user idea into ONE ready-to-use English prompt for a text-to-image model.',
+  '',
+  'Rules:',
+  '- Understand the intent first, then add only details that agree with it: subject features, appearance and clothing, action and pose, environment, lighting, composition, camera and lens, materials, and small visual details.',
+  '- Never change the subject, the scene, or the art style the user asked for. Never invent a specific real person or brand.',
+  '- If the user specifies on-image text, aspect ratio, art style or other explicit requirements, keep them faithfully.',
+  '- Output format: a single line of comma-separated English keywords and short phrases. No line breaks.',
+  '- Keep it about 40-80 words. Prefer concrete visual detail over stacked quality buzzwords.',
+  '- Output ONLY the prompt. No explanation, no title, no numbering, no Markdown, no code fences, no surrounding quotes.',
+].join('\n');
+
+/* 输出清理：去围栏 / 前缀 / 编号 / 多余换行，最后交给 normalizePrompt 收尾。
+   只清理结构性杂质，不删除正文里的标点与内容。 */
+function sanitizePromptOut(text) {
+  let s = String(text == null ? '' : text);
+  if (!s.trim()) return '';
+
+  // 1) Markdown 代码围栏（```json … ``` / ~~~ … ~~~）
+  s = s.replace(/```[a-zA-Z0-9_-]*\s*/g, '\n').replace(/~~~/g, '\n');
+
+  // 2) 行首常见前缀（Prompt: / English prompt: / 英文提示词：/ 以下是…）
+  const PREFIX = /^(?:final\s+)?(?:(?:english|中文|英文)\s*)?(?:prompt|提示词|画面描述|描述)\s*[:：]\s*/i;
+  const LEAD = /^(?:[-*•·>]+\s*|\d{1,2}\s*[.、)]\s*|\(\d{1,2}\)\s*)/;
+  const INTRO = /^(?:以下|下面)(?:是|为)[^\n]{0,24}?[:：]\s*/i;
+
+  // 3) 逐行去掉前缀、编号与项目符号，再合并成一行
+  const lines = s.split(/\r?\n/)
+    .map(l => l.trim())
+    .map(l => l.replace(LEAD, '').replace(PREFIX, '').replace(INTRO, '').trim())
+    .filter(Boolean);
+
+  // 4) 去掉整体被引号/反引号包裹的外壳；并清掉合并后仍残留的「, 2. 」式行内编号
+  s = lines.join(', ')
+    .replace(/(^|,\s*)\d{1,2}\s*[.、)]\s+/g, '$1')
+    .replace(/(^|,\s*)\(\d{1,2}\)\s*/g, '$1')
+    .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
+    .trim();
+
+  // 5) 交给现有规范函数（合并空格、规范逗号、去首尾标点）
+  return normalizePrompt(s);
+}
+
+function aiPanelHTML() {
+  return `
+    <div class="field">
+      <label>你想画什么</label>
+      <textarea id="aiReq" rows="4" placeholder="例：画一只穿机甲的橘猫，站在赛博朋克城市的雨夜街头，电影级光影" spellcheck="false"></textarea>
+      <small>用日常语言描述即可，AI 会补全细节并整理成可直接绘图的英文提示词</small>
+    </div>
+    <div class="ai-actions">
+      <button class="btn tiny primary" id="aiRun">生成提示词</button>
+      <span class="ai-status" id="aiStatus"></span>
+    </div>
+    <div class="field">
+      <label>生成结果（可编辑）</label>
+      <textarea id="aiResult" rows="6" placeholder="点「生成提示词」后，结果会出现在这里" spellcheck="false"></textarea>
+      <small id="aiResultMeta">生成后可在此微调，确认无误再填入提示词框</small>
+    </div>
+    <div class="ai-actions">
+      <button class="btn tiny ghost" id="aiAgain">重新生成</button>
+      <span class="grow"></span>
+      <button class="btn tiny ghost" id="aiCancel">取消</button>
+      <button class="btn tiny primary" id="aiFill">填入提示词</button>
+    </div>
+    <div class="ai-fill-choice" id="aiFillChoice" hidden>
+      <span>提示词框里已有内容：</span>
+      <button class="btn tiny danger" data-aifill="replace">覆盖</button>
+      <button class="btn tiny ghost" data-aifill="append">追加</button>
+      <button class="btn tiny ghost" data-aifill="cancel">取消</button>
+    </div>`;
+}
+
+function setAiStatus(kind, text) {
+  const el = $('#aiStatus');
+  if (!el) return;
+  el.className = 'ai-status' + (kind ? ' ' + kind : '');
+  el.dataset.state = kind || '';
+  el.textContent = text || '';
+}
+
+function updateAiMeta() {
+  const el = $('#aiResultMeta');
+  const res = $('#aiResult');
+  if (!el) return;
+  const n = res ? res.value.trim().length : 0;
+  el.textContent = n
+    ? `${n} 字符 · 生成后可在此微调，确认无误再填入提示词框`
+    : '生成后可在此微调，确认无误再填入提示词框';
+}
+
+function showAiFillChoice(on) {
+  const box = $('#aiFillChoice');
+  if (box) box.hidden = !on;
+}
+
+function setAiBusy(on) {
+  const run = $('#aiRun'), again = $('#aiAgain'), fill = $('#aiFill');
+  if (run) {
+    run.disabled = on;
+    run.textContent = on ? '生成中…' : '生成提示词';
+  }
+  if (again) again.disabled = on;
+  if (fill) fill.disabled = on;
+  if (on) setAiStatus('busy', '正在生成提示词…');
+  else {
+    const st = $('#aiStatus');
+    if (st && st.dataset.state === 'busy') setAiStatus('', '');
+  }
+}
+
+/* 关闭 / 切换面板时中止未完成的请求，并恢复按钮与加载态 */
+function abortAiRequest() {
+  const ctrl = state.ai.ctrl;
+  if (ctrl) {
+    state.ai.ctrl = null;
+    try { ctrl.abort(); } catch (e) {}
+  }
+  if (state.ai.busy) {
+    state.ai.busy = false;
+    setAiBusy(false);
+  }
+}
+
+function openAiWrite() {
+  closeMoreMenu();
+  openModal('✨ AI 帮写提示词', aiPanelHTML());
+
+  const reqEl = $('#aiReq');
+  const resEl = $('#aiResult');
+  if (reqEl) reqEl.value = state.ai.req || '';
+  if (resEl) resEl.value = state.ai.result || '';
+
+  bindAiPanel();
+  updateAiMeta();
+  setAiStatus('', '');
+  setAiBusy(false);
+
+  setTimeout(() => {
+    const t = state.ai.result ? resEl : reqEl;
+    if (t) t.focus();
+  }, 60);
+}
+
+function bindAiPanel() {
+  const run = $('#aiRun');
+  const again = $('#aiAgain');
+  const fill = $('#aiFill');
+  const cancel = $('#aiCancel');
+  const reqEl = $('#aiReq');
+  const resEl = $('#aiResult');
+  const choice = $('#aiFillChoice');
+
+  if (run) run.addEventListener('click', runAiWrite);
+
+  if (again) again.addEventListener('click', () => {
+    if (state.ai.busy) return;
+    runAiWrite();
+  });
+
+  if (fill) fill.addEventListener('click', () => fillAiResult(''));
+
+  if (cancel) cancel.addEventListener('click', () => closeModal());
+
+  if (choice) choice.addEventListener('click', e => {
+    const b = e.target.closest('[data-aifill]');
+    if (!b) return;
+    if (b.dataset.aifill === 'cancel') { showAiFillChoice(false); return; }
+    fillAiResult(b.dataset.aifill);
+  });
+
+  if (reqEl) {
+    reqEl.addEventListener('input', () => { state.ai.req = reqEl.value; });
+    reqEl.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runAiWrite(); }
+    });
+  }
+
+  if (resEl) {
+    resEl.addEventListener('input', () => { state.ai.result = resEl.value; updateAiMeta(); });
+  }
+}
+
+async function runAiWrite() {
+  if (state.ai.busy) return;
+
+  const reqEl = $('#aiReq');
+  if (!reqEl) return;
+  const req = reqEl.value.trim();
+  if (!req) { toast('先写一句创作要求吧', 'warn'); reqEl.focus(); return; }
+  if (req.length > AI_REQ_MAX) {
+    toast(`创作要求太长了（上限 ${AI_REQ_MAX} 字）`, 'warn', 3200);
+    return;
+  }
+
+  const { base, key } = resolveLlm();
+  if (!base || !key) {
+    toast('请先在设置 →「翻译」里配置对话接口（或点「同画图」复用画图 Key）', 'warn', 3800);
+    const acc = document.getElementById('accTranslate');
+    if (acc) { acc.open = true; if (window.innerWidth > 1000) els.panelParams.classList.add('open'); }
+    return;
+  }
+
+  state.ai.req = req;
+  state.ai.busy = true;
+  const ctrl = new AbortController();
+  state.ai.ctrl = ctrl;
+  showAiFillChoice(false);
+  setAiBusy(true);
+
+  try {
+    const raw = await callChat({
+      system: AI_WRITE_SYSTEM,
+      user: req,
+      temperature: 0.7,
+      timeoutMs: 60000,
+      signal: ctrl.signal,
+    });
+
+    const out = sanitizePromptOut(raw);
+    if (!out) throw new Error('模型没有返回有效的提示词，换个说法再试一次');
+
+    state.ai.result = out;
+    const resEl = $('#aiResult');
+    if (resEl) { resEl.value = out; updateAiMeta(); }
+    setAiStatus('ok', '✓ 已生成');
+    toast('提示词已生成，可修改后填入', 'ok', 2400);
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      /* 用户取消或关闭面板：静默，不打扰 */
+    } else {
+      let msg = e.message || String(e);
+      if (e && e.code === 'NO_CONFIG') msg = '还没配置对话接口';
+      else if (e && e.name === 'TimeoutError') msg = '请求超时（60 秒未返回），可以重试';
+      else if (/Failed to fetch|NetworkError/i.test(msg)) {
+        msg = '网络失败：检查接口地址是否正确、该地址是否支持对话接口（/chat/completions）';
+      }
+      setAiStatus('err', '✕ ' + msg);
+      toast('生成失败：' + msg, 'err', 4200);
+    }
+  } finally {
+    if (state.ai.ctrl === ctrl) {
+      state.ai.ctrl = null;
+      state.ai.busy = false;
+      setAiBusy(false);
+    }
+  }
+}
+
+/**
+ * 填入提示词框。
+ * @param {''|'replace'|'append'} mode 空串表示「让函数自己决定」
+ */
+function fillAiResult(mode) {
+  const resEl = $('#aiResult');
+  const out = sanitizePromptOut(state.ai.result || (resEl ? resEl.value : ''));
+  if (!out) {
+    toast('还没有可填入的提示词', 'warn');
+    return;
+  }
+  state.ai.result = out;
+  if (resEl && resEl.value !== out) resEl.value = out;
+
+  const cur = els.promptBox.value;
+  if (!cur.trim()) mode = 'replace';
+  else if (!mode) { showAiFillChoice(true); return; }   // 有内容 → 必须显式选择
+
+  if (mode === 'replace') {
+    pushUndo();
+    els.promptBox.value = out;
+    state.ui.chips = [{ id: uid(), text: out }];        // 重置 chips，避免残留旧词条
+    updatePromptMeta();
+    renderChips();
+    saveDraft();
+    toast('已填入提示词（Ctrl+Shift+Z 可撤销）', 'ok', 2600);
+  } else if (mode === 'append') {
+    const ta = els.promptBox;
+    try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {}
+    if (!insertPrompt(out, { silent: true })) {
+      toast('这段提示词已经在输入框里了', 'warn', 2600);
+      return;
+    }
+    toast('已追加到提示词', 'ok');
+  } else {
+    return;
+  }
+
+  flashComposer();
+  closeModal();
+  try { els.promptBox.focus({ preventScroll: true }); } catch (e) {}
 }
 
 /* ---------------- 主题 / 抽屉 ---------------- */

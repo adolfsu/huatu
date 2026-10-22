@@ -1444,3 +1444,42 @@ code {
 
 /* 云同步「测试连接」结果内的次要说明文字 */
 .test-result .tr-dim { color: var(--text-3); opacity: .85; font-size: 11px; }
+
+/* ============================================================
+   AI 帮写提示词（弹窗内的操作条与状态）
+   ============================================================ */
+.ai-actions {
+  display: flex; align-items: center; gap: 8px;
+  margin: 10px 0 12px;
+}
+.ai-actions:last-child { margin-bottom: 0; }
+.ai-status {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 11.5px; line-height: 1.4;
+  color: var(--text-3);
+  word-break: break-word;
+}
+.ai-status.busy { color: var(--accent); }
+.ai-status.ok   { color: var(--teal); }
+.ai-status.err  { color: var(--danger); }
+
+#aiResult { min-height: 96px; }
+
+.ai-fill-choice {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 10px; padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  font-size: 11.5px; color: var(--text-2);
+}
+.ai-fill-choice[hidden] { display: none; }
+
+/* 窄屏底栏：新增的「AI 帮写」紧贴左侧，不参与右侧的自动留白 */
+@media (max-width: 1000px) {
+  .composer-foot #btnAiWrite { margin-left: 0; }
+}
+
+/* 中等宽度（1001–1180px）底栏允许换行：多一个「AI 帮写」后避免挤压 */
+@media (max-width: 1180px) {
+  .composer-foot { flex-wrap: wrap; gap: 8px 12px; }
+}
