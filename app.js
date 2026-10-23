@@ -741,12 +741,32 @@ function histPut(rec) {
     tx.onerror = () => rej(tx.error);
   }));
 }
+/* 清空整个历史仓库。
+   成功 → resolve(true)；失败 / 中止 → reject(Error)。
+   oncomplete / onerror / onabort 三者都监听，且保证 Promise 只结算一次。 */
 function histDeleteAll() {
   return histDB().then(db => new Promise((res, rej) => {
-    const tx = db.transaction(HIST_STORE, 'readwrite');
-    tx.objectStore(HIST_STORE).clear();
-    tx.oncomplete = () => res(true);
-    tx.onerror = () => rej(tx.error);
+    let settled = false;
+    const done = (fn, v) => { if (settled) return; settled = true; fn(v); };
+
+    let tx;
+    try {
+      tx = db.transaction(HIST_STORE, 'readwrite');
+    } catch (e) {
+      done(rej, e);
+      return;
+    }
+
+    tx.oncomplete = () => done(res, true);
+    tx.onerror = () => done(rej, tx.error || new Error('清空历史失败'));
+    tx.onabort = () => done(rej, tx.error || new Error('清空历史被中止'));
+
+    try {
+      tx.objectStore(HIST_STORE).clear();
+    } catch (e) {
+      done(rej, e);
+      try { tx.abort(); } catch (e2) {}
+    }
   }));
 }
 function histGetAll() {
@@ -910,6 +930,18 @@ function renderHistory() {
   const grid = els.historyGrid;
   const empty = $('#historyEmpty');
 
+  // 清空入口：历史为空时禁用；信息条显示条数与原图数
+  const clearBtn = $('#btnClearHist');
+  if (clearBtn) clearBtn.disabled = !h.length;
+  const wipeBtn = $('#btnWipeGen');
+  if (wipeBtn) wipeBtn.disabled = !h.length;
+  const info = $('#histInfo');
+  if (info) {
+    info.textContent = h.length
+      ? `共 ${h.length} 条 · 其中原图 ${h.filter(x => x.hasFull).length} 张`
+      : '';
+  }
+
   if (!h.length) {
     empty.classList.remove('hidden');
     grid.innerHTML = '';
@@ -935,6 +967,86 @@ function fmtTime(ts) {
   const d = new Date(ts);
   const p = n => String(n).padStart(2, '0');
   return `${d.getMonth() + 1}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/* ============================================================
+   清空历史记录
+   —— 历史区与设置面板两个入口共用；确认后才动数据
+   ============================================================ */
+
+/* 打开二次确认弹窗。条数与原图数从 IndexedDB 现取，不用可能过期的内存态 */
+async function openClearHistoryConfirm() {
+  if (state.busy) {
+    toast('正在生成图片，请等待任务完成后再清空历史', 'warn', 3400);
+    return;
+  }
+
+  let recs = [];
+  try { recs = await histGetAll(); } catch (e) { recs = []; }
+  const total = Array.isArray(recs) ? recs.length : 0;
+
+  if (!total) {
+    toast('还没有历史记录可清空', '', 2400);
+    await reloadHistory().catch(() => {});
+    renderHistory();
+    updateStoreStat();
+    return;
+  }
+
+  const fullCnt = recs.filter(r => r && (r.full || r.srcUrl)).length;
+
+  openModal('清空历史记录', `
+    <p>将删除 <b>${total}</b> 条历史记录${fullCnt ? `，其中 <b>${fullCnt}</b> 条仍保存着原图数据` : ''}。</p>
+    <p>这些图片的本地数据会一并清除，<b style="color:var(--danger)">此操作不可撤销</b>。</p>
+    <p style="font-size:12px;color:var(--text-3)">只清除生成历史及其关联的本地图片；
+    提示词词库、接口配置、GitHub 云同步设置、主题等数据都不受影响。</p>
+    <div class="field-row">
+      <button class="btn tiny danger" data-clearhist="1">确认清空</button>
+      <button class="btn tiny ghost" data-close-only="1">取消</button>
+    </div>`);
+}
+
+/* 真正执行清空。返回 true 表示 IndexedDB 已清空成功。
+   顺序：先清数据库，成功后才动缓存 / 下载状态 / 旧迁移键 / 界面。 */
+let _clearingHistory = false;
+
+async function clearHistoryRecords() {
+  if (_clearingHistory) return false;      // 防重复提交（连点确认）
+  if (state.busy) {
+    toast('正在生成图片，请等待任务完成后再清空历史', 'warn', 3400);
+    return false;
+  }
+
+  _clearingHistory = true;
+  try {
+    /* 1) 数据库清空：失败时不动任何界面与持久化状态 */
+    try {
+      await histDeleteAll();
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      toast('清空失败：' + msg + '（历史记录未删除）', 'err', 4600);
+      return false;
+    }
+
+    /* 2) 数据库已成功，下面是收尾；收尾异常不应误报为「清空失败」 */
+    try {
+      await reloadHistory();                 // 内部 revokeHistURLs() + _histFull.clear() + 重建 state.history
+      if (state.ui.dlMode) exitDownloadMode();   // 退出下载模式（内部会 persistDL 写入空状态）
+      else state.ui.dlPicked = [];
+      store.remove(LS.dl);                   // 彻底移除下载选择持久化（含 exitDownloadMode 刚写入的空状态）
+      store.remove(LS.hist);                 // 旧版 localStorage 历史，防止下次启动被 histMigrateLS 迁移回来
+      renderHistory();
+      updateStoreStat();
+    } catch (e) {
+      toast('历史已清空，但界面刷新异常，请刷新页面查看', 'warn', 4200);
+      return true;
+    }
+
+    toast('历史记录已清空', 'ok');
+    return true;
+  } finally {
+    _clearingHistory = false;
+  }
 }
 
 /* ---------------- 提示词用量统计 ---------------- */
@@ -2418,12 +2530,16 @@ function bindEvents() {
     $('#modalClose')?.click();
     document.querySelector('[data-tab="history"]')?.click();
   });
-  $('#btnWipeGen').addEventListener('click', async () => {
-    await histDeleteAll();
-    await reloadHistory();
-    renderHistory();
-    updateStoreStat();
-    toast('生成历史已清空', 'ok');
+  /* 清空历史：历史区与设置面板共用同一套确认 + 清空逻辑 */
+  $('#btnClearHist').addEventListener('click', openClearHistoryConfirm);
+  $('#btnWipeGen').addEventListener('click', openClearHistoryConfirm);
+  els.modalBody.addEventListener('click', async e => {
+    const btn = e.target.closest('[data-clearhist]');
+    if (!btn) return;
+    btn.disabled = true;
+    const ok = await clearHistoryRecords();
+    if (ok) closeModal();
+    else btn.disabled = false;   // 失败时保留弹窗，方便直接重试
   });
   $('#btnWipeAll').addEventListener('click', () => {
     openModal('重置全部数据', `

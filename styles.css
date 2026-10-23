@@ -524,6 +524,24 @@ code {
 .card-error b { display: block; margin-bottom: 5px; font-size: 13px; }
 .card-error .msg { font-family: var(--mono); font-size: 11px; word-break: break-all; opacity: .9; }
 
+/* 历史区工具条：吸顶显示，滚动时不遮挡图片与批量下载条 */
+.hist-bar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex; align-items: center; gap: 10px;
+  margin: -20px -20px 12px;
+  padding: 9px 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.hist-bar-info { font-size: 11.5px; color: var(--text-3); }
+.hist-bar .btn[disabled] { opacity: .45; cursor: not-allowed; }
+/* 窄屏时 .stage-body 的 padding 变成 14px，这里同步，避免工具条溢出 */
+@media (max-width: 1000px) {
+  .hist-bar { margin: -14px -14px 10px; padding: 8px 14px; }
+}
+
 .history-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
