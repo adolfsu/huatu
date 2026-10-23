@@ -382,64 +382,59 @@ code {
 .group-head:hover .group-actions { opacity: 1; }
 .group.collapsed .group-body { display: none; }
 
-.group-body { padding: 4px 7px 8px; display: flex; flex-direction: column; gap: 5px; }
+.group-body { padding: 4px 7px 8px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
 .group-empty {
+  flex: 1 1 100%;
   font-size: 11.5px; color: var(--text-3);
   padding: 8px; text-align: center;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-sm);
 }
 
-/* 提示词卡片 */
-.pcard {
-  display: flex; align-items: flex-start; gap: 8px;
-  padding: 8px 9px;
+/* 词条标签：默认只显示名称，正文放在 title 悬停查看 */
+.ptag {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 100%;
+  padding: 3px 3px 3px 9px;
   border-radius: var(--radius-sm);
   background: var(--surface);
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
   cursor: pointer;
   transition: border-color .13s, background .13s, transform .1s;
   position: relative;
 }
-.pcard:hover { border-color: var(--border-strong); background: var(--surface); }
-.pcard:active { transform: scale(.985); }
-.pcard.picked { border-color: var(--accent); background: var(--accent-soft); }
-.pcard.dragging { opacity: .4; }
-.pcard.drop-before { box-shadow: 0 -2px 0 0 var(--accent) inset; }
+.ptag:hover { border-color: var(--border-strong); background: var(--surface-3); }
+.ptag:active { transform: scale(.985); }
+.ptag.picked { border-color: var(--accent); background: var(--accent-soft); }
+.ptag.dragging { opacity: .4; }
+.ptag.drop-before { box-shadow: -2px 0 0 0 var(--accent) inset; }
 
-.pcard-main { flex: 1; min-width: 0; }
-.pcard-text {
-  font-size: 12.5px;
-  line-height: 1.45;
+.ptag-name {
+  font-size: 12.5px; line-height: 1.45;
+  color: var(--text);
   word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  min-width: 0;
 }
-.pcard.expanded .pcard-text { -webkit-line-clamp: unset; }
+/* 旧词条没有名称时的占位样式，提示用户可去补名称 */
+.ptag.unnamed .ptag-name { color: var(--text-3); font-style: italic; }
+.ptag-used { color: var(--amber); font-size: 10px; flex: 0 0 auto; }
+
+/* 管理按钮常驻占位（避免悬停时标签跳动），默认低透明度 */
+.ptag-acts {
+  display: inline-flex; align-items: center; gap: 0;
+  flex: 0 0 auto;
+  opacity: .3;
+  transition: opacity .13s;
+}
+.ptag:hover .ptag-acts,
+.ptag:focus-within .ptag-acts,
+.ptag:focus-visible .ptag-acts { opacity: 1; }
+.ptag-acts .icon-btn { width: 19px; height: 19px; font-size: 11px; }
 
 /* 权重与括号语法高亮 */
 .tk-weight  { color: var(--teal);  font-weight: 600; }
 .tk-brace   { color: var(--pink);  font-weight: 600; }
 .tk-bracket { color: var(--amber); font-weight: 600; }
-.pcard-meta {
-  display: flex; align-items: center; gap: 7px;
-  margin-top: 4px;
-  font-size: 10.5px; color: var(--text-3);
-}
-.pcard-tag {
-  padding: 0 6px; border-radius: 999px;
-  background: var(--surface-3); color: var(--text-3);
-  font-size: 10px;
-}
-.pcard-actions {
-  display: flex; gap: 1px; flex: 0 0 auto;
-  opacity: 0; transition: opacity .13s;
-}
-.pcard:hover .pcard-actions { opacity: 1; }
-.pcard-actions .icon-btn { width: 22px; height: 22px; font-size: 12px; }
-.pcard-used { color: var(--amber); font-size: 10px; }
 
 .lib-empty {
   padding: 30px 16px; text-align: center;

@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.10.1';
+const APP_VERSION = '1.11.0';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -37,93 +37,94 @@ function portraitLibrary() {
   return seedLibrary().slice(0, 8);
 }
 
-/* 内置示例词库：以「人像摄影」为默认场景，兼顾电商产品图，开箱即用 */
+/* 内置示例词库：以「人像摄影」为默认场景，兼顾电商产品图，开箱即用
+   每条词条 = [中文名称, 英文提示词正文]，名称只用于识别，点击插入的仍是正文 */
 function seedLibrary() {
   const g = (name, color, items) => ({
     id: uid(), name, color, collapsed: false,
-    items: items.map(t => ({
-      id: uid(), text: t, usage: 0, lastUsed: 0, tags: [],
+    items: items.map(([n, t]) => ({
+      id: uid(), name: n, text: t, usage: 0, lastUsed: 0, tags: [],
     })),
   });
   return [
     g('① 人像·主体', GROUP_COLORS[0], [
-      'young asian woman, 25 years old, elegant and confident',
-      'asian man, 30s, mature and calm expression',
-      'elderly person with kind eyes, weathered face, life stories',
-      'child, 8 years old, innocent bright smile',
-      'professional female executive in tailored suit',
+      ['优雅年轻女性', 'young asian woman, 25 years old, elegant and confident'],
+      ['沉稳亚洲男性', 'asian man, 30s, mature and calm expression'],
+      ['慈祥长者', 'elderly person with kind eyes, weathered face, life stories'],
+      ['八岁孩童', 'child, 8 years old, innocent bright smile'],
+      ['职场女高管', 'professional female executive in tailored suit'],
     ]),
     g('② 人像·五官特写', GROUP_COLORS[1], [
-      'delicate facial features, symmetrical face, flawless skin texture',
-      'expressive eyes, bright catchlight in iris, long eyelashes',
-      'natural eyebrows, subtle makeup, rosy lips',
-      'freckles on nose bridge, natural skin pores, realistic texture',
-      'sharp jawline, high cheekbones, refined profile',
+      ['精致五官', 'delicate facial features, symmetrical face, flawless skin texture'],
+      ['明亮眼神', 'expressive eyes, bright catchlight in iris, long eyelashes'],
+      ['自然裸妆', 'natural eyebrows, subtle makeup, rosy lips'],
+      ['雀斑真实肤质', 'freckles on nose bridge, natural skin pores, realistic texture'],
+      ['立体侧颜', 'sharp jawline, high cheekbones, refined profile'],
     ]),
     g('③ 人像·妆造', GROUP_COLORS[2], [
-      'natural no-makeup makeup look, dewy skin, bare lips',
-      'elegant evening makeup, smoky eyes, bold red lip',
-      'traditional chinese hanfu, elaborate hairpin, silk fabric',
-      'minimalist white shirt, clean styling, silver stud earrings',
-      'tousled wavy hair, soft flyaways, windswept styling',
+      ['伪素颜妆', 'natural no-makeup makeup look, dewy skin, bare lips'],
+      ['晚宴浓妆', 'elegant evening makeup, smoky eyes, bold red lip'],
+      ['汉服造型', 'traditional chinese hanfu, elaborate hairpin, silk fabric'],
+      ['极简白衬衫', 'minimalist white shirt, clean styling, silver stud earrings'],
+      ['蓬松卷发', 'tousled wavy hair, soft flyaways, windswept styling'],
     ]),
     g('④ 人像·光线', GROUP_COLORS[3], [
-      'soft diffused window light, gentle shadow on cheek',
-      'Rembrandt lighting, dramatic triangle of light on cheek',
-      'golden hour backlight, glowing hair rim, warm halo',
-      'studio beauty light, butterfly lighting, even skin tone',
-      'neon signage light, cyan and magenta split lighting',
+      ['柔和窗光', 'soft diffused window light, gentle shadow on cheek'],
+      ['伦勃朗光', 'Rembrandt lighting, dramatic triangle of light on cheek'],
+      ['逆光金调', 'golden hour backlight, glowing hair rim, warm halo'],
+      ['影棚蝴蝶光', 'studio beauty light, butterfly lighting, even skin tone'],
+      ['霓虹双色光', 'neon signage light, cyan and magenta split lighting'],
     ]),
     g('⑤ 人像·镜头', GROUP_COLORS[4], [
-      '85mm portrait lens, f/1.4, creamy bokeh background',
-      '50mm lens, f/2.0, natural field of view, half body shot',
-      'close-up headshot, shallow depth of field, eyelash level',
-      'full body shot, 35mm, environmental portrait with context',
-      'macro detail shot of eye and skin texture',
+      ['85mm 人像虚化', '85mm portrait lens, f/1.4, creamy bokeh background'],
+      ['50mm 半身', '50mm lens, f/2.0, natural field of view, half body shot'],
+      ['特写头像', 'close-up headshot, shallow depth of field, eyelash level'],
+      ['35mm 全身环境', 'full body shot, 35mm, environmental portrait with context'],
+      ['微距质感', 'macro detail shot of eye and skin texture'],
     ]),
     g('⑥ 画质基础', GROUP_COLORS[5], [
-      'masterpiece, best quality, ultra detailed, 8k uhd',
-      'sharp focus, high resolution, professional photography',
-      'hyperrealistic skin detail, cinematic color grading',
-      'HDR, physically based rendering, global illumination',
+      ['高画质基础', 'masterpiece, best quality, ultra detailed, 8k uhd'],
+      ['锐利清晰', 'sharp focus, high resolution, professional photography'],
+      ['超写实皮肤', 'hyperrealistic skin detail, cinematic color grading'],
+      ['HDR 渲染', 'HDR, physically based rendering, global illumination'],
     ]),
     g('⑦ 氛围情绪', GROUP_COLORS[6], [
-      'serene and contemplative mood, quiet atmosphere',
-      'joyful candid laughter, natural unposed moment',
-      'melancholic mood, soft desaturated tones, film grain',
-      'confident editorial fashion mood, high fashion energy',
+      ['宁静沉思', 'serene and contemplative mood, quiet atmosphere'],
+      ['抓拍欢笑', 'joyful candid laughter, natural unposed moment'],
+      ['忧郁胶片', 'melancholic mood, soft desaturated tones, film grain'],
+      ['时装大片感', 'confident editorial fashion mood, high fashion energy'],
     ]),
     g('⑧ 背景场景', GROUP_COLORS[7] || GROUP_COLORS[0], [
-      'blurred city street at dusk, bokeh streetlights',
-      'minimalist studio backdrop, seamless neutral gray',
-      'sunlit cafe interior, warm wooden tones, soft out of focus',
-      'lush green garden, dappled light through leaves',
-      'plain dark background, subject isolation, studio setting',
+      ['黄昏街景虚化', 'blurred city street at dusk, bokeh streetlights'],
+      ['极简影棚背景', 'minimalist studio backdrop, seamless neutral gray'],
+      ['阳光咖啡馆', 'sunlit cafe interior, warm wooden tones, soft out of focus'],
+      ['绿意花园', 'lush green garden, dappled light through leaves'],
+      ['纯深色背景', 'plain dark background, subject isolation, studio setting'],
     ]),
     g('⑨ 产品电商', GROUP_COLORS[0], [
-      'product photography, clean white background, centered composition',
-      'reflective floor, subtle drop shadow, e-commerce ready',
-      'floating product, dynamic splash, advertising style',
-      'flat lay, top-down view, minimalist prop styling',
+      ['白底产品图', 'product photography, clean white background, centered composition'],
+      ['反光地面倒影', 'reflective floor, subtle drop shadow, e-commerce ready'],
+      ['悬浮动感产品', 'floating product, dynamic splash, advertising style'],
+      ['俯拍平铺', 'flat lay, top-down view, minimalist prop styling'],
     ]),
     g('⑩ 色彩风格', GROUP_COLORS[2], [
-      'vibrant color palette, high saturation, punchy contrast',
-      'muted pastel tones, soft desaturated film look',
-      'monochrome with a single accent color',
-      'morandi color scheme, elegant low saturation',
-      'warm teal and orange cinematic grade',
+      ['高饱和撞色', 'vibrant color palette, high saturation, punchy contrast'],
+      ['低饱和柔和', 'muted pastel tones, soft desaturated film look'],
+      ['单色点缀', 'monochrome with a single accent color'],
+      ['莫兰迪色', 'morandi color scheme, elegant low saturation'],
+      ['青橙电影色', 'warm teal and orange cinematic grade'],
     ]),
     g('⑪ 画风切换', GROUP_COLORS[3], [
-      'photorealistic, DSLR photo, ultra sharp detail',
-      '3D render, octane render, blender, clay material',
-      'watercolor illustration, hand painted texture',
-      'flat vector illustration, minimal geometric shapes',
-      'anime style, cel shading, clean lineart',
+      ['写实摄影', 'photorealistic, DSLR photo, ultra sharp detail'],
+      ['3D 渲染', '3D render, octane render, blender, clay material'],
+      ['水彩插画', 'watercolor illustration, hand painted texture'],
+      ['扁平矢量', 'flat vector illustration, minimal geometric shapes'],
+      ['动漫赛璐璐', 'anime style, cel shading, clean lineart'],
     ]),
     g('⑫ 排版留白', GROUP_COLORS[4], [
-      'negative space, clean composition, room for text overlay',
-      'rule of thirds, balanced layout, visual hierarchy',
-      'centered symmetrical composition',
+      ['大量留白', 'negative space, clean composition, room for text overlay'],
+      ['三分构图', 'rule of thirds, balanced layout, visual hierarchy'],
+      ['居中对称', 'centered symmetrical composition'],
     ]),
   ];
 }
@@ -322,6 +323,7 @@ function loadAll() {
     collapsed: !!gr.collapsed,
     items: (Array.isArray(gr.items) ? gr.items : []).map(it => ({
       id: it.id || uid(),
+      name: typeof it.name === 'string' ? it.name : '',   // 旧词条没有 name → 留空，展示为「未命名词条」
       text: it.text || it.prompt || '',
       usage: it.usage || 0,
       lastUsed: it.lastUsed || 0,
@@ -360,6 +362,13 @@ const persist = {
 };
 
 /* ---------------- 词库 CRUD ---------------- */
+/* 词条显示名：优先用户填的 name，旧数据没有 name 时用占位名 */
+const ITEM_UNNAMED = '未命名词条';
+function itemLabel(it) {
+  const n = it && typeof it.name === 'string' ? it.name.trim() : '';
+  return n || ITEM_UNNAMED;
+}
+
 function findGroup(gid) { return state.lib.find(g => g.id === gid); }
 function findItem(gid, iid) {
   const g = findGroup(gid);
@@ -380,10 +389,15 @@ function addGroup(name) {
   return g;
 }
 
-function addItem(gid, text) {
+function addItem(gid, name, text) {
   const g = findGroup(gid);
-  if (!g || !text || !text.trim()) return null;
-  const it = { id: uid(), text: normalizePrompt(text), usage: 0, lastUsed: 0, tags: [] };
+  if (!g || !text || !String(text).trim()) return null;
+  const it = {
+    id: uid(),
+    name: String(name == null ? '' : name).trim(),
+    text: normalizePrompt(text),
+    usage: 0, lastUsed: 0, tags: [],
+  };
   g.items.unshift(it);
   persist.lib();
   scheduleSync('add-item');
@@ -537,8 +551,11 @@ function getVisibleLib() {
   let groups = state.lib.map(g => {
     if (!q) return { group: g, items: g.items.slice() };
     const nameHit = g.name.toLowerCase().includes(q);
+    // 搜索同时匹配词条名称与提示词正文：旧用户按正文搜的习惯仍然有效
     const items = nameHit ? g.items.slice()
-      : g.items.filter(i => i.text.toLowerCase().includes(q));
+      : g.items.filter(i =>
+          (i.name || '').toLowerCase().includes(q) ||
+          i.text.toLowerCase().includes(q));
     return { group: g, items };
   });
   if (q) groups = groups.filter(x => x.items.length > 0 || x.group.name.toLowerCase().includes(q));
@@ -550,7 +567,7 @@ function getVisibleLib() {
     const items = x.items.slice().sort((a, b) => {
       if (sort === 'usage')  return (b.usage || 0) - (a.usage || 0);
       if (sort === 'recent') return (b.lastUsed || 0) - (a.lastUsed || 0);
-      if (sort === 'alpha')  return a.text.localeCompare(b.text, 'zh');
+      if (sort === 'alpha')  return itemLabel(a).localeCompare(itemLabel(b), 'zh');
       return 0;
     });
     return { group: x.group, items };
@@ -582,7 +599,7 @@ function renderLib() {
   const html = groups.map(({ group: g, items }) => {
     const collapsed = g.collapsed && !state.ui.search ? 'collapsed' : '';
     const body = items.length
-      ? items.map(it => renderItemCard(g.id, it)).join('')
+      ? items.map(it => renderItemTag(g.id, it)).join('')
       : `<div class="group-empty">这个分组还没有提示词</div>`;
 
     return `<div class="group ${collapsed}" data-gid="${g.id}">
@@ -606,22 +623,20 @@ function renderLib() {
   wrap.innerHTML = html;
 }
 
-function renderItemCard(gid, it) {
+/* 词条标签：默认只显示名称，正文放在 title 里便于悬停确认；点击插入正文 */
+function renderItemTag(gid, it) {
   const picked = state.ui.picked.includes(it.id) ? 'picked' : '';
-  const used = it.usage ? `<span class="pcard-used" title="使用 ${it.usage} 次">★${it.usage}</span>` : '';
-  return `<div class="pcard ${picked}" draggable="true" data-gid="${gid}" data-iid="${it.id}">
-    <div class="pcard-main">
-      <div class="pcard-text">${esc(it.text)}</div>
-      <div class="pcard-meta">
-        <span>${it.text.length} 字</span>
-        ${used}
-      </div>
-    </div>
-    <div class="pcard-actions">
-      <button class="icon-btn" data-act="edit-item" data-gid="${gid}" data-iid="${it.id}" title="编辑">✎</button>
-      <button class="icon-btn" data-act="copy-item" data-gid="${gid}" data-iid="${it.id}" title="拷贝">⧉</button>
-      <button class="icon-btn" data-act="del-item" data-gid="${gid}" data-iid="${it.id}" title="删除">🗑</button>
-    </div>
+  const unnamed = itemLabel(it) === ITEM_UNNAMED ? ' unnamed' : '';
+  const used = it.usage ? `<span class="ptag-used" title="使用 ${it.usage} 次">★${it.usage}</span>` : '';
+  return `<div class="ptag${picked ? ' ' + picked : ''}${unnamed}" draggable="true" tabindex="0" role="button"
+    data-gid="${gid}" data-iid="${it.id}" title="${esc(it.text)}">
+    <span class="ptag-name">${esc(itemLabel(it))}</span>
+    ${used}
+    <span class="ptag-acts">
+      <button class="icon-btn" data-act="edit-item" data-gid="${gid}" data-iid="${it.id}" title="编辑名称与内容">✎</button>
+      <button class="icon-btn" data-act="copy-item" data-gid="${gid}" data-iid="${it.id}" title="复制提示词正文">⧉</button>
+      <button class="icon-btn" data-act="del-item" data-gid="${gid}" data-iid="${it.id}" title="删除词条">🗑</button>
+    </span>
   </div>`;
 }
 
@@ -1510,17 +1525,26 @@ function mergeLibraries(local, remote) {
       byName.set(key, target);
       newGroups++;
     }
-    const seen = new Set(target.items.map(i => i.text.trim().toLowerCase()));
+    const byText = new Map(target.items.map(i => [i.text.trim().toLowerCase(), i]));
     (rg.items || []).forEach(ri => {
       const t = String(ri.text || '').trim();
       if (!t) return;
-      if (seen.has(t.toLowerCase())) { dups++; return; }
-      seen.add(t.toLowerCase());
-      target.items.push({
-        id: uid(), text: t,
+      const name = String(ri.name || '').trim();
+      const key = t.toLowerCase();
+      const exist = byText.get(key);
+      if (exist) {
+        dups++;
+        // 本地这条没有名称、云端有 → 顺手补上，避免「本地有名称、同步后反而变无名」
+        if (!String(exist.name || '').trim() && name) exist.name = name;
+        return;
+      }
+      const item = {
+        id: uid(), name, text: t,
         usage: ri.usage || 0, lastUsed: ri.lastUsed || 0,
         tags: Array.isArray(ri.tags) ? ri.tags : [],
-      });
+      };
+      target.items.push(item);
+      byText.set(key, item);
       added++;
     });
   });
@@ -2070,13 +2094,22 @@ function bindEvents() {
     const btn = e.target.closest('[data-act]');
     if (btn) { handleLibAction(btn, e); return; }
 
-    const card = e.target.closest('.pcard');
-    if (card) { onPickItem(card.dataset.gid, card.dataset.iid); return; }
+    const tag = e.target.closest('.ptag');
+    if (tag) { onPickItem(tag.dataset.gid, tag.dataset.iid); return; }
 
     const head = e.target.closest('.group-head');
     if (head && !e.target.closest('.group-name[contenteditable]')) {
       toggleGroup(head.dataset.gid);
     }
+  });
+
+  // 标签可键盘操作：Enter / 空格 追加正文（与鼠标点击一致）
+  els.libScroll.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    const tag = e.target.closest('.ptag');
+    if (!tag || e.target.closest('[data-act]')) return;
+    e.preventDefault();
+    onPickItem(tag.dataset.gid, tag.dataset.iid);
   });
 
   // 双击分组名重命名
@@ -2088,7 +2121,7 @@ function bindEvents() {
   /* --- 拖拽卡片 --- */
   let dragCtx = null;
   els.libScroll.addEventListener('dragstart', e => {
-    const card = e.target.closest('.pcard');
+    const card = e.target.closest('.ptag');
     if (!card) return;
     dragCtx = { gid: card.dataset.gid, iid: card.dataset.iid };
     card.classList.add('dragging');
@@ -2096,8 +2129,8 @@ function bindEvents() {
     e.dataTransfer.effectAllowed = 'move';
   });
   els.libScroll.addEventListener('dragend', e => {
-    $$('.pcard.dragging').forEach(c => c.classList.remove('dragging'));
-    $$('.pcard.drop-before').forEach(c => c.classList.remove('drop-before'));
+    $$('.ptag.dragging').forEach(c => c.classList.remove('dragging'));
+    $$('.ptag.drop-before').forEach(c => c.classList.remove('drop-before'));
     $$('.group.drop-target').forEach(c => c.classList.remove('drop-target'));
     dragCtx = null;
   });
@@ -2108,10 +2141,10 @@ function bindEvents() {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     $$('.group.drop-target').forEach(c => c.classList.remove('drop-target'));
-    $$('.pcard.drop-before').forEach(c => c.classList.remove('drop-before'));
+    $$('.ptag.drop-before').forEach(c => c.classList.remove('drop-before'));
     const tgtGroup = over.closest('.group');
     if (tgtGroup) tgtGroup.classList.add('drop-target');
-    const overCard = e.target.closest('.pcard');
+    const overCard = e.target.closest('.ptag');
     if (overCard && overCard.dataset.iid !== dragCtx.iid) overCard.classList.add('drop-before');
   });
   els.libScroll.addEventListener('drop', e => {
@@ -2120,7 +2153,7 @@ function bindEvents() {
     const bodyEl = e.target.closest('.group-body');
     if (!bodyEl) return;
     const toGid = bodyEl.dataset.gid;
-    const overCard = e.target.closest('.pcard');
+    const overCard = e.target.closest('.ptag');
     moveItem(dragCtx.gid, dragCtx.iid, toGid, overCard ? overCard.dataset.iid : null);
     dragCtx = null;
   });
@@ -2564,15 +2597,19 @@ function handleLibAction(btn) {
 
   switch (act) {
     case 'add-item': {
-      openModal('新增提示词', `
+      openModal('新增词条', `
         <div class="field">
-          <label>提示词内容</label>
+          <label>名称（用于识别，可填中文）</label>
+          <input type="text" id="newItemName" maxlength="40" placeholder="例如：柔和窗光" spellcheck="false">
+        </div>
+        <div class="field">
+          <label>提示词内容（点击标签时插入这段）</label>
           <textarea id="newItemText" rows="4" placeholder="例如：soft natural window light, gentle shadows"></textarea>
         </div>
         <div class="field-row">
           <button class="btn tiny primary" data-newitem="${gid}">保存</button>
         </div>`);
-      setTimeout(() => { const t = $('#newItemText'); if (t) t.focus(); }, 40);
+      setTimeout(() => { const t = $('#newItemName'); if (t) t.focus(); }, 40);
       break;
     }
     case 'rename-group':
@@ -2599,15 +2636,23 @@ function handleLibAction(btn) {
     case 'edit-item': {
       const it = findItem(gid, iid);
       if (!it) break;
-      openModal('编辑提示词', `
+      openModal('编辑词条', `
         <div class="field">
-          <label>提示词内容</label>
+          <label>名称（用于识别，可填中文）</label>
+          <input type="text" id="editItemName" maxlength="40" value="${esc(it.name || '')}"
+            placeholder="${it.name ? '例如：柔和窗光' : ITEM_UNNAMED + '，建议补一个名称'}" spellcheck="false">
+        </div>
+        <div class="field">
+          <label>提示词内容（点击标签时插入这段）</label>
           <textarea id="editItemText" rows="5">${esc(it.text)}</textarea>
         </div>
         <div class="field-row">
           <button class="btn tiny primary" data-saveitem="${gid}|${iid}">保存</button>
         </div>`);
-      setTimeout(() => { const t = $('#editItemText'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 40);
+      setTimeout(() => {
+        const t = $('#editItemName');
+        if (t) { t.focus(); try { t.select(); } catch (e) {} }
+      }, 40);
       break;
     }
     case 'copy-item': {
@@ -2634,12 +2679,24 @@ document.addEventListener('click', e => {
 
   const ni = e.target.closest('[data-newitem]');
   if (ni) {
-    const t = $('#newItemText');
-    if (t && t.value.trim()) {
-      addItem(ni.dataset.newitem, t.value);
-      renderLib();
-      toast('已保存', 'ok');
+    const nameEl = $('#newItemName');
+    const textEl = $('#newItemText');
+    const name = nameEl ? nameEl.value.trim() : '';
+    const text = textEl ? textEl.value.trim() : '';
+    // 名称为空时不保存、不关弹窗，直接提示
+    if (!name) {
+      toast('请填写名称，方便在词库里快速识别', 'warn', 3000);
+      if (nameEl) nameEl.focus();
+      return;
     }
+    if (!text) {
+      toast('请填写提示词内容', 'warn', 2600);
+      if (textEl) textEl.focus();
+      return;
+    }
+    addItem(ni.dataset.newitem, name, text);
+    renderLib();
+    toast('已保存', 'ok');
     closeModal();
     return;
   }
@@ -2647,12 +2704,20 @@ document.addEventListener('click', e => {
   if (si) {
     const [gid, iid] = si.dataset.saveitem.split('|');
     const it = findItem(gid, iid);
-    const t = $('#editItemText');
-    if (it && t) {
-      it.text = normalizePrompt(t.value);
-      persist.lib(); renderLib(); scheduleSync('edit-item');
-      toast('已更新', 'ok');
+    const nameEl = $('#editItemName');
+    const textEl = $('#editItemText');
+    if (!it || !textEl) { closeModal(); return; }
+    const text = textEl.value.trim();
+    if (!text) {
+      toast('提示词内容不能为空', 'warn', 2600);
+      textEl.focus();
+      return;
     }
+    // 编辑旧词条允许先留空名称（继续显示「未命名词条」），也允许补充名称
+    it.name = nameEl ? nameEl.value.trim() : (it.name || '');
+    it.text = normalizePrompt(text);
+    persist.lib(); renderLib(); scheduleSync('edit-item');
+    toast('已更新', 'ok');
     closeModal();
     return;
   }
@@ -2670,7 +2735,7 @@ function onPickItem(gid, iid) {
   const it = findItem(gid, iid);
   if (!it) return;
   insertPrompt(it.text, { label: it.text });
-  const card = els.libScroll.querySelector(`.pcard[data-iid="${iid}"]`);
+  const card = els.libScroll.querySelector(`.ptag[data-iid="${iid}"]`);
   if (card) {
     card.classList.add('picked');
     setTimeout(() => card.classList.remove('picked'), 420);
