@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -242,6 +242,7 @@ const state = {
   ai: {                 // AI 帮写（仅内存态，关掉面板再打开可恢复）
     req: '',            // 创作要求
     result: '',         // 生成结果
+    level: 'l2',        // 加工等级 l1 | l2 | l3（仅内存，刷新回默认二级）
     busy: false,
     ctrl: null,         // 进行中请求的 AbortController
   },
@@ -3357,19 +3358,84 @@ async function translatePrompt() {
    ============================================================ */
 const AI_REQ_MAX = 2000;
 
-const AI_WRITE_SYSTEM = [
-  '你是资深的 AI 绘图提示词工程师。',
-  '把用户的创作要求整理成一条可以直接用于文生图 / 图生图的中文提示词。',
+/* ---------- 三档共用规则：语言、输出形态、不可越过的边界 ---------- */
+const AI_WRITE_BASE = [
+  '你是资深的 AI 绘图提示词工程师。把用户的创作要求加工成一条可直接用于文生图 / 图生图的中文提示词。',
   '',
-  '要求：',
+  '共同规则：',
   '- 默认用简体中文输出完整提示词；不要输出英文提示词，也不要中英混排（专有名词、型号、用户指定保留的原文除外）。',
-  '- 先理解用户想画什么，再补充与之一致的细节：主体特征、外观与服装、动作与表情、环境背景、光线与氛围、构图与视角、镜头语言、材质与画面细节。',
-  '- 不得擅自改变用户明确指定的主体、场景、艺术风格、画面文字、比例等要求。',
-  '- 不要无依据地堆砌形容词，也不要添加用户没有要求的人物、品牌或元素。',
   '- 输出格式：逗号分隔的单行中文提示词，不要换行。',
-  '- 长度约 60-120 个汉字，具体、可读、便于用户自己修改，具体细节优先于华丽辞藻。',
-  '- 只输出提示词本身：不要解释、不要标题、不要编号、不要 Markdown、不要代码块、不要加引号。',
+  '- 只输出最终提示词：不要解释、不要标题、不要编号、不要 Markdown、不要代码块、不要加引号。',
+  '- 不得改变用户明确指定的主体、服装、动作、场景、画风、画面文字、比例等关键要求。',
+  '- 不得添加与原始要求冲突的设定；不为凑长度堆砌无关形容词，也不添加用户没有要求的人物、品牌或元素。',
+  '- 下文「本次加工等级」的规则优先于你的默认习惯；等级越高，允许补充的细节越多。',
 ].join('\n');
+
+/* ---------- 三档分级规则：只描述加工深度差异，公共约束在上面的 BASE 里 ---------- */
+const AI_LEVEL_RULES = {
+  l1: [
+    '本次加工等级：一级 · 整理优化。',
+    '目标：改善表达，而不是扩写。',
+    '- 整理语序、消除重复，理顺主体、动作、环境、光线、构图之间已经存在的关系。',
+    '- 只明确原文已经表达或可以直接推导的内容；不主动决定用户未指定的关键视觉设定（例如具体服装款式、颜色、镜头焦段）。',
+    '- 原文已经清楚时，允许只做很小的修改，结果与原文接近是正常的。',
+    '- 不设强制扩写数量，不要为了让结果看起来不同而硬加细节。',
+    '- 参考长度：与原文相当，不要明显变长。',
+  ].join('\n'),
+
+  l2: [
+    '本次加工等级：二级 · 细节扩充。',
+    '目标：在保留原意的前提下，补充合理且可见的画面细节。',
+    '- 根据原文情况选择适用的维度补充：人物外观与服装；动作、姿态与物体交互；环境与背景元素；光线、阴影、构图、镜头与景深；材质、纹理与表面特征。',
+    '- 通常补充若干处有价值的细节即可，不把固定数量当作硬性指标。',
+    '- 用户明确指定的内容优先于你补充的内容；未指定的部分可以做协调的合理创作，但不要把新增设定说成用户原本的要求。',
+    '- 不必深挖每个手指关节或每处褶皱，整体协调、清晰、可执行比细节数量更重要。',
+    '- 参考长度：约为原文的 1.5-2.5 倍。',
+  ].join('\n'),
+
+  l3: [
+    '本次加工等级：三级 · 深度具象化。',
+    '目标：把模糊的概念拆成可以直接画出来的具体描述。',
+    '',
+    '按原文情况，从下面几类里挑最影响成图的 2-4 类来拆解，不要机械填满所有类别：',
+    '- 服装：颜色与色调、面料与光泽、剪裁与版型、领口、袖型、腰线、裙摆、褶皱、花边蕾丝刺绣、纽扣与饰品及其具体位置。',
+    '- 动作：身体朝向、躯干姿态、肩膀与头部角度、重心落在哪条腿、膝盖弯曲、双脚间距与脚尖方向、手臂位置、手腕角度、手指动作、左右手分工。',
+    '- 物体交互：哪只手接触物体、如何握持、接触位置、物体朝向，以及另一只手或身体其他部分在哪、在做什么。',
+    '- 环境与光影：把「氛围感」「电影感」这类抽象词换成具体光源方向与色温、反射、阴影、空间层次、背景元素、景深与镜头感。',
+    '',
+    '细节选择规则：',
+    '- 优先补全对画面影响最大的细节；不必每次同时描写服装、手、腿脚和光影。',
+    '- 不为达到固定细节数量而编造无意义内容；不确定时宁可少写一个细节，也不要输出明显不合理的细节。',
+    '- 输出前做一次合理性检查：左右手是否冲突、关节是否反关节、重心是否成立、物体接触关系是否矛盾；发现冲突就删掉冲突项。',
+    '- 不得因为进入三级就擅自改变原文的核心设定。',
+    '- 参考长度：约为原文的 2.5-4 倍，清晰优先，不要为了长而拖长。',
+  ].join('\n'),
+};
+
+/* ---------- 统一输出格式（放在最后，强化一次） ---------- */
+const AI_WRITE_FORMAT = [
+  '输出要求：',
+  '- 只输出一条中文提示词，用逗号分隔，整条保持在一行内。',
+  '- 不要输出等级名称、加工说明或任何额外文字。',
+].join('\n');
+
+const AI_LEVEL_KEYS = ['l1', 'l2', 'l3'];
+const AI_LEVEL_DEFAULT = 'l2';
+
+const AI_LEVEL_HINT = {
+  l1: '一级：只整理表达、理顺语序，几乎不新增设定',
+  l2: '二级：保留原意，补充合理的可见细节（推荐）',
+  l3: '三级：把服装、动作、交互、光影拆成具体细节',
+};
+
+function normalizeAiLevel(level) {
+  return AI_LEVEL_RULES[level] ? level : AI_LEVEL_DEFAULT;
+}
+
+/* 组合当前等级的系统提示词：BASE + 该档规则 + FORMAT */
+function buildAiSystem(level) {
+  return [AI_WRITE_BASE, AI_LEVEL_RULES[normalizeAiLevel(level)], AI_WRITE_FORMAT].join('\n\n');
+}
 
 /* 输出清理：去围栏 / 前缀 / 编号 / 多余换行，最后交给 normalizePrompt 收尾。
    只清理结构性杂质，不删除正文里的标点与内容。 */
@@ -3405,10 +3471,16 @@ function sanitizePromptOut(text) {
 
 function aiPanelHTML() {
   return `
+    <div class="ai-levels" id="aiLevels" role="group" aria-label="加工等级">
+      <button type="button" class="ai-level-btn" data-ailevel="l1" aria-pressed="false">① 整理优化</button>
+      <button type="button" class="ai-level-btn" data-ailevel="l2" aria-pressed="true">② 细节扩充</button>
+      <button type="button" class="ai-level-btn" data-ailevel="l3" aria-pressed="false">③ 深度具象化</button>
+    </div>
+    <small class="ai-level-hint" id="aiLevelHint"></small>
     <div class="field">
       <label>你想画什么</label>
       <textarea id="aiReq" rows="4" placeholder="例：画一只穿机甲的橘猫，站在赛博朋克城市的雨夜街头，电影级光影" spellcheck="false"></textarea>
-      <small>用日常语言描述即可，AI 会补全细节并整理成可直接绘图的中文提示词</small>
+      <small>用日常语言描述即可，AI 会按所选等级整理成可直接绘图的中文提示词</small>
     </div>
     <div class="ai-actions">
       <button class="btn tiny primary" id="aiRun">生成提示词</button>
@@ -3456,6 +3528,25 @@ function showAiFillChoice(on) {
   if (box) box.hidden = !on;
 }
 
+/* ---------- 加工等级：切换与渲染 ---------- */
+function setAiLevel(level) {
+  state.ai.level = normalizeAiLevel(level);
+  renderAiLevels();
+}
+
+/* 同步按钮选中态与说明文字；不碰用户输入与生成结果，也不发请求 */
+function renderAiLevels() {
+  const cur = normalizeAiLevel(state.ai.level);
+  $$('#aiLevels .ai-level-btn').forEach(btn => {
+    const on = btn.dataset.ailevel === cur;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.disabled = !!state.ai.busy;
+  });
+  const hint = $('#aiLevelHint');
+  if (hint) hint.textContent = AI_LEVEL_HINT[cur] || '';
+}
+
 function setAiBusy(on) {
   const run = $('#aiRun'), again = $('#aiAgain'), fill = $('#aiFill');
   if (run) {
@@ -3464,6 +3555,8 @@ function setAiBusy(on) {
   }
   if (again) again.disabled = on;
   if (fill) fill.disabled = on;
+  // 请求期间禁止切档，避免请求用的等级与界面显示不一致
+  $$('#aiLevels .ai-level-btn').forEach(btn => { btn.disabled = on; });
   if (on) setAiStatus('busy', '正在生成提示词…');
   else {
     const st = $('#aiStatus');
@@ -3494,6 +3587,7 @@ function openAiWrite() {
   if (resEl) resEl.value = state.ai.result || '';
 
   bindAiPanel();
+  renderAiLevels();
   updateAiMeta();
   setAiStatus('', '');
   setAiBusy(false);
@@ -3512,6 +3606,13 @@ function bindAiPanel() {
   const reqEl = $('#aiReq');
   const resEl = $('#aiResult');
   const choice = $('#aiFillChoice');
+  const levels = $('#aiLevels');
+
+  if (levels) levels.addEventListener('click', e => {
+    const btn = e.target.closest('[data-ailevel]');
+    if (!btn || btn.disabled) return;
+    setAiLevel(btn.dataset.ailevel);   // 只改档位：不清输入、不清结果、不触发请求
+  });
 
   if (run) run.addEventListener('click', runAiWrite);
 
@@ -3572,7 +3673,7 @@ async function runAiWrite() {
 
   try {
     const raw = await callChat({
-      system: AI_WRITE_SYSTEM,
+      system: buildAiSystem(state.ai.level),
       user: req,
       temperature: 0.7,
       timeoutMs: 60000,

@@ -1466,6 +1466,38 @@ code {
 /* ============================================================
    AI 帮写提示词（弹窗内的操作条与状态）
    ============================================================ */
+/* 加工等级切换：三档并排，窄屏自动换行 */
+.ai-levels {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 8px;
+}
+.ai-level-btn {
+  flex: 1 1 auto;
+  min-width: 104px;
+  padding: 6px 10px;
+  font: inherit; font-size: 12px;
+  color: var(--text-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.ai-level-btn:hover { border-color: var(--border-strong); color: var(--text); }
+.ai-level-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.ai-level-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.ai-level-hint {
+  display: block;
+  margin: 0 0 12px;
+  font-size: 10.5px; line-height: 1.5;
+  color: var(--text-3);
+}
+
 .ai-actions {
   display: flex; align-items: center; gap: 8px;
   margin: 10px 0 12px;
