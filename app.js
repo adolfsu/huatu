@@ -19,7 +19,7 @@ const LS = {
 /* 内置示例库版本号。改动 seedLibrary() 内容时递增，
    用于提示老用户「示例库有更新」 */
 const SEED_VERSION = 2;
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.10.1';
 
 const GROUP_COLORS = ['#5b5bd6', '#d64f9e', '#0f9b8e', '#c88417', '#4a90d9', '#7a5af5', '#d9604f', '#4a9c5d'];
 
@@ -3760,7 +3760,7 @@ function applyTheme(t) {
   $('#btnTheme').textContent = t === 'dark' ? '☀' : '◐';
   // 浏览器地址栏 / 状态栏颜色跟随主题
   const meta = document.querySelector('#metaThemeColor');
-  if (meta) meta.setAttribute('content', t === 'dark' ? '#12141c' : '#5b5bd6');
+  if (meta) meta.setAttribute('content', t === 'dark' ? '#0b0f14' : '#0a7080');
 }
 function closeDrawers() {
   els.panelLib.classList.remove('open');

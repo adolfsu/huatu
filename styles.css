@@ -1,39 +1,55 @@
 /* ============================================================
-   Prompt Painter · 提示词绘画工作台
-   主题：浅色为主，支持深色；三栏工作台布局
+   欧阳画板 · 提示词绘画工作台
+   主题：浅色 / 深色双主题；三栏工作台布局
+   —— P0 基础视觉系统：石墨底 + 青色主强调 + 蓝紫辅助
    ============================================================ */
 
 :root {
-  /* 浅色主题 */
-  --bg:            #f4f5f8;
-  --bg-alt:        #eceef3;
+  color-scheme: light;
+
+  /* 浅色主题：冷灰底 + 深青主色（深青保证白底上的文字对比度） */
+  --bg:            #f2f5f8;
+  --bg-alt:        #e9eef4;
   --surface:       #ffffff;
-  --surface-2:     #f8f9fc;
-  --surface-3:     #f0f2f7;
-  --border:        #e3e6ee;
-  --border-strong: #d3d8e4;
+  --surface-2:     #f7f9fc;
+  --surface-3:     #edf2f7;
+  --border:        #dce3ec;
+  --border-strong: #c6d2e0;
 
-  --text:          #1c2130;
-  --text-2:        #5a6376;
-  --text-3:        #8b93a6;
+  --text:          #0e1620;
+  --text-2:        #4a5866;
+  --text-3:        #62707f;   /* 小字在浅底上仍需 ≥4.5:1 */
 
-  --accent:        #5b5bd6;
-  --accent-hover:  #4a4ac4;
-  --accent-soft:   #eeeeff;
+  --accent:        #0a7080;
+  --accent-hover:  #085d6b;
+  --accent-soft:   #e2f6f9;
   --accent-text:   #ffffff;
 
-  --pink:          #d64f9e;
-  --pink-soft:     #fdeef7;
-  --teal:          #0f9b8e;
-  --teal-soft:     #e6f7f5;
-  --amber:         #c88417;
-  --amber-soft:    #fdf4e3;
-  --danger:        #d64545;
+  /* 语义色：ai / success / warn 为语义名，pink / teal / amber 保留为兼容旧名 */
+  --ai:            #6d5bd0;
+  --ai-soft:       #f1ecfe;
+  --pink:          var(--ai);
+  --pink-soft:     var(--ai-soft);
+
+  --success:       #0b7550;
+  --success-soft:  #e6f7ef;
+  --teal:          var(--success);
+  --teal-soft:     var(--success-soft);
+
+  --warn:          #95620a;
+  --warn-soft:     #fdf4e3;
+  --amber:         var(--warn);
+  --amber-soft:    var(--warn-soft);
+
+  --danger:        #c33a3a;
   --danger-soft:   #fdeded;
 
-  --shadow-sm: 0 1px 2px rgba(24,29,48,.06);
-  --shadow:    0 2px 8px rgba(24,29,48,.08);
-  --shadow-lg: 0 12px 32px rgba(24,29,48,.16);
+  /* 实色填充（青/绿/紫/红）上的文字色 */
+  --on-solid:      #ffffff;
+
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.06);
+  --shadow:    0 2px 8px rgba(16,24,40,.09);
+  --shadow-lg: 0 12px 32px rgba(16,24,40,.16);
 
   --radius:    12px;
   --radius-sm: 8px;
@@ -49,35 +65,49 @@
 }
 
 html[data-theme="dark"] {
-  --bg:            #12141c;
-  --bg-alt:        #0d0f15;
-  --surface:       #1a1d27;
-  --surface-2:     #20242f;
-  --surface-3:     #262b38;
-  --border:        #2c3242;
-  --border-strong: #3a4152;
+  color-scheme: dark;
 
-  --text:          #eaeef7;
-  --text-2:        #a8b0c2;
-  --text-3:        #79839a;
+  /* 深色主题：石墨底 + 青色主强调 */
+  --bg:            #0b0f14;
+  --bg-alt:        #070a0f;
+  --surface:       #111821;
+  --surface-2:     #161f2b;
+  --surface-3:     #1c2735;
+  --border:        #1e2a38;
+  --border-strong: #2c3b4d;
 
-  --accent:        #7b7bf0;
-  --accent-hover:  #8e8ef5;
-  --accent-soft:   #262650;
-  --accent-text:   #ffffff;
+  --text:          #e8eef5;
+  --text-2:        #9aa9ba;
+  --text-3:        #78889a;
 
-  --pink:          #ef6fb5;
-  --pink-soft:     #3a2033;
-  --teal:          #35c4b4;
-  --teal-soft:     #14332f;
-  --amber:         #e0a83f;
-  --amber-soft:    #362b12;
-  --danger:        #ef6262;
-  --danger-soft:   #3a1e1e;
+  --accent:        #35d6e8;
+  --accent-hover:  #5be3f2;
+  --accent-soft:   rgba(53,214,232,.12);
+  --accent-text:   #04222a;   /* 亮青上的深色文字，保证对比度 */
 
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
-  --shadow:    0 2px 10px rgba(0,0,0,.45);
-  --shadow-lg: 0 16px 40px rgba(0,0,0,.6);
+  --ai:            #a78bfa;
+  --ai-soft:       rgba(167,139,250,.14);
+  --pink:          var(--ai);
+  --pink-soft:     var(--ai-soft);
+
+  --success:       #3ed598;
+  --success-soft:  rgba(62,213,152,.14);
+  --teal:          var(--success);
+  --teal-soft:     var(--success-soft);
+
+  --warn:          #f0b45a;
+  --warn-soft:     rgba(240,180,90,.14);
+  --amber:         var(--warn);
+  --amber-soft:    var(--warn-soft);
+
+  --danger:        #ff6b6b;
+  --danger-soft:   rgba(255,107,107,.14);
+
+  --on-solid:      #0b0f14;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.5);
+  --shadow:    0 2px 10px rgba(0,0,0,.5);
+  --shadow-lg: 0 16px 40px rgba(0,0,0,.65);
 }
 
 * { box-sizing: border-box; }
@@ -133,7 +163,7 @@ code {
   border-radius: 10px;
   display: grid; place-items: center;
   font-weight: 800; font-size: 13px; letter-spacing: .5px;
-  color: #fff;
+  color: var(--on-solid);
   background: linear-gradient(135deg, var(--accent) 0%, var(--pink) 100%);
   box-shadow: var(--shadow-sm);
 }
@@ -190,7 +220,7 @@ code {
 }
 .btn.ghost:hover { background: var(--surface-3); color: var(--text); border-color: var(--border-strong); }
 .btn.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
-.btn.danger:hover { background: var(--danger); color: #fff; }
+.btn.danger:hover { background: var(--danger); color: var(--on-solid); }
 .btn.big { padding: 11px 26px; font-size: 14px; font-weight: 600; }
 .btn.tiny { padding: 5px 10px; font-size: 12px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
@@ -591,10 +621,10 @@ code {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: inherit;
 }
-.chip .chip-x:hover { background: var(--accent); color: #fff; }
+.chip .chip-x:hover { background: var(--accent); color: var(--on-solid); }
 .chip.flash { animation: chipFlash .5s ease; }
 @keyframes chipFlash {
-  0%   { transform: scale(.85); background: var(--accent); color: #fff; }
+  0%   { transform: scale(.85); background: var(--accent); color: var(--on-solid); }
   60%  { transform: scale(1.06); }
   100% { transform: scale(1); }
 }
@@ -627,8 +657,8 @@ code {
 
 .gen-spinner {
   width: 14px; height: 14px;
-  border: 2px solid rgba(255,255,255,.35);
-  border-top-color: #fff;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: spin .7s linear infinite;
 }
@@ -868,7 +898,7 @@ code {
 .card-img .pick-box::after {
   content: "✓";
   font-size: 13px; font-weight: 700;
-  color: #fff; opacity: 0;
+  color: var(--on-solid); opacity: 0;
   transition: opacity .13s;
 }
 .card-img.picked .pick-box {
@@ -892,7 +922,7 @@ code {
 }
 .hist-card { position: relative; }
 .hist-card .pick-box::after {
-  content: "✓"; font-size: 11px; font-weight: 700; color: #fff; opacity: 0;
+  content: "✓"; font-size: 11px; font-weight: 700; color: var(--on-solid); opacity: 0;
 }
 .hist-card.picked .pick-box { background: var(--accent); border-color: var(--accent); }
 .hist-card.picked .pick-box::after { opacity: 1; }
@@ -943,7 +973,7 @@ code {
 .matrix-badge {
   width: 22px; height: 22px; border-radius: 7px;
   display: grid; place-items: center;
-  font-size: 12px; font-weight: 800; color: #fff;
+  font-size: 12px; font-weight: 800; color: var(--on-solid);
   flex: 0 0 auto;
 }
 .matrix-badge.a { background: var(--accent); }
@@ -1313,9 +1343,9 @@ code {
   max-width: 80vw;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.toast.ok   { background: var(--teal); color: #fff; }
-.toast.err  { background: var(--danger); color: #fff; }
-.toast.warn { background: var(--amber); color: #fff; }
+.toast.ok   { background: var(--teal); color: var(--on-solid); }
+.toast.err  { background: var(--danger); color: var(--on-solid); }
+.toast.warn { background: var(--amber); color: var(--on-solid); }
 .toast.out  { animation: toastOut .2s ease forwards; }
 @keyframes toastIn  { from { opacity: 0; transform: translateY(14px) scale(.94) } to { opacity: 1; transform: none } }
 @keyframes toastOut { to { opacity: 0; transform: translateY(10px) scale(.96) } }
@@ -1532,4 +1562,29 @@ code {
 /* 中等宽度（1001–1180px）底栏允许换行：多一个「AI 帮写」后避免挤压 */
 @media (max-width: 1180px) {
   .composer-foot { flex-wrap: wrap; gap: 8px 12px; }
+}
+
+/* ============================================================
+   P0 · 键盘焦点（:focus-visible）
+   —— 只有键盘导航时才显示，鼠标点击不出现焦点环
+   —— 颜色取主强调色，2px 描边 + 2px 间距，克制不加辉光
+   ============================================================ */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 以下控件已有自己的聚焦视觉（边框变色 + 柔光 / 父级 focus-within），
+   这里抑制 outline，避免出现“双环” */
+.mini-select:focus-visible,
+.matrix-col-name:focus-visible,
+.matrix-ta:focus-visible {
+  outline: none;
+}
+
+/* 这两个输入原本 outline:none 且没有替代样式，补上可见焦点 */
+.model-picker-head input:focus-visible,
+.lb-bar input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
